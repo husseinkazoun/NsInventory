@@ -36,7 +36,7 @@ Route::get('php/', function () {
 });
 
 Route::get('/', function () {
-    return view('welcome');
+    return redirect()->route('dashboard');
 });
 
 Route::middleware(['auth'])->group(function () {
