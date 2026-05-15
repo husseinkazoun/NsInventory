@@ -2,8 +2,8 @@
 
 namespace App\Jobs;
 
+use App\AI\VisionProvider;
 use App\Models\PhotoScan;
-use App\Services\OpenAIVisionService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -30,12 +30,12 @@ class ProcessPhotoScan implements ShouldQueue
             $this->photoScan->markAsProcessing();
             
             $startTime = microtime(true);
-            
-            // Initialize the vision service
-            $visionService = new OpenAIVisionService();
-            
+
+            // Resolve the configured vision provider (default: OpenAI gpt-4o)
+            $provider = app(VisionProvider::class);
+
             // Process the photo
-            $results = $visionService->analyzePhoto($this->photoScan);
+            $results = $provider->analyze($this->photoScan);
             
             $processingTime = microtime(true) - $startTime;
             $results['processing_time'] = $processingTime;
