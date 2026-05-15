@@ -10,6 +10,8 @@ class PhotoScan extends Model
 {
     use HasFactory;
 
+    const UPDATED_AT = null;
+
     protected $fillable = [
         'scanning_session_id',
         'product_id',
