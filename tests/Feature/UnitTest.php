@@ -66,7 +66,7 @@ class UnitTest extends TestCase
 
         $response->assertStatus(200)
                 ->assertViewIs('units.edit')
-                ->assertSee('Edit Unit');
+                ->assertSee('Unit Details');
     }
 
     public function test_user_can_store_unit()
@@ -133,7 +133,8 @@ class UnitTest extends TestCase
 
         $response = $this->actingAs($user)->put('units/' . $unit->slug, [
             'name' => 'Meter',
-            'slug' => 'meter'
+            'slug' => 'meter',
+            'short_code' => 'm',
         ]);
 
         $this->assertDatabaseHas('units', [

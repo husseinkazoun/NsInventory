@@ -56,8 +56,10 @@ abstract class TestCase extends BaseTestCase
 
     public function createSupplier()
     {
-        return Supplier::create([
-            'name' => 'Thomann'
+        // Use the factory so non-nullable / enum-cast fields (e.g. SupplierType)
+        // are filled in; keep the deterministic name=Thomann for assertions.
+        return Supplier::factory()->create([
+            'name' => 'Thomann',
         ]);
     }
 }
