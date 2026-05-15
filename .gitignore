@@ -68,3 +68,7 @@ Thumbs.db
 *.tmp
 *.temp
 
+# Local AI tool directories
+/.claude/
+/.snapshots/
+
