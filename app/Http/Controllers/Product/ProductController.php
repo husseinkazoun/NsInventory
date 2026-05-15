@@ -15,7 +15,8 @@ class ProductController extends Controller
 {
     public function index()
     {
-        $products = Product::select('id', 'name')
+        $products = Product::regularProducts()
+            ->select('id', 'name')
             ->limit(1)
             ->get();
 
@@ -54,7 +55,7 @@ class ProductController extends Controller
         }
 
         try {
-            $product = Product::create($request->all());
+            $product = Product::create(['product_type' => 'regular'] + $request->all());
 
             /**
              * Handle image upload

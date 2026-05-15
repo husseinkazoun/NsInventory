@@ -36,7 +36,7 @@ final class ProductsTable extends PowerGridComponent
 
     public function datasource(): Builder
     {
-        return Product::query()
+        return Product::regularProducts()
             ->with(['category', 'unit']);
     }
 

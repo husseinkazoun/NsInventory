@@ -41,7 +41,8 @@ class ProductByCategoryTable extends Component
     public function render()
     {
         return view('livewire.tables.product-by-category-table',[
-            'products' => Product::where('category_id', $this->category->id)
+            'products' => Product::regularProducts()
+                ->where('category_id', $this->category->id)
                 ->search($this->search)
                 ->orderBy($this->sortField, $this->sortAsc ? 'asc' : 'desc')
                 ->paginate($this->perPage)

@@ -12,7 +12,7 @@ class ProductExportController extends Controller
 {
     public function create()
     {
-        $products = Product::all()->sortBy('product_name');
+        $products = Product::regularProducts()->get()->sortBy('product_name');
 
         $product_array [] = array(
             'Product Name',

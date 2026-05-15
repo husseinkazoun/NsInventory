@@ -27,7 +27,7 @@ class OrderForm extends Component
     {
         $this->cart_instance = $cartInstance;
 
-        $this->allProducts = Product::all();
+        $this->allProducts = Product::regularProducts()->get();
 
         //$cart_items = Cart::instance($this->cart_instance)->content();
     }

@@ -42,6 +42,7 @@ class ProductImportController extends Controller
                     'buying_price'  => $sheet->getCell( 'F' . $row )->getValue(),
                     'selling_price' => $sheet->getCell( 'G' . $row )->getValue(),
                     'product_image' => $sheet->getCell( 'H' . $row )->getValue(),
+                    'product_type'  => 'regular',
                 ];
                 $startcount++;
             }

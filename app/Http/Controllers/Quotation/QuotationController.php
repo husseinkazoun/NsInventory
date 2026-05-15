@@ -30,7 +30,7 @@ class QuotationController extends Controller
 
         return view('quotations.create', [
             'cart' => Cart::content('quotation'),
-            'products' => Product::all(),
+            'products' => Product::regularProducts()->get(),
             'customers' => Customer::all(),
 
             // maybe?

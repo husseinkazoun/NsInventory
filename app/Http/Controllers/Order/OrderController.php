@@ -33,7 +33,7 @@ class OrderController extends Controller
         return view('orders.create', [
             'carts' => Cart::content(),
             'customers' => Customer::all(['id', 'name']),
-            'products' => Product::with(['category', 'unit'])->get(),
+            'products' => Product::regularProducts()->with(['category', 'unit'])->get(),
         ]);
     }
 

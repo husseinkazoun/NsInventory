@@ -18,7 +18,7 @@ class DashboardController extends Controller
         $completedOrders = Order::where('order_status', OrderStatus::COMPLETE)
             ->count();
 
-        $products = Product::count();
+        $products = Product::regularProducts()->count();
 
         $purchases = Purchase::count();
         $todayPurchases = Purchase::query()

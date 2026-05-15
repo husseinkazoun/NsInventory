@@ -28,10 +28,13 @@ class SearchProduct extends Component
 
     public function updatedQuery()
     {
-        $this->search_results = Product::where('name', 'like', '%'.$this->query.'%')
-            ->orWhere('code', 'like', '%'.$this->query.'%')
-            ->orWhereHas('category', function ($q) {
-                $q->where('name', 'like', '%'.$this->query.'%');
+        $this->search_results = Product::regularProducts()
+            ->where(function ($builder) {
+                $builder->where('name', 'like', '%'.$this->query.'%')
+                    ->orWhere('code', 'like', '%'.$this->query.'%')
+                    ->orWhereHas('category', function ($q) {
+                        $q->where('name', 'like', '%'.$this->query.'%');
+                    });
             })
             ->take($this->how_many)
             ->get();

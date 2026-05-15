@@ -9,15 +9,12 @@ class ProductController
 {
     public function index(Request $request){
 
-        $products = Product::all();
+        $query = Product::regularProducts();
 
-        if ($request->has('category_id'))
-        {
-            $products = Product::query()
-                ->where('category_id', $request->get('category_id'))
-                ->get();
+        if ($request->has('category_id')) {
+            $query->where('category_id', $request->get('category_id'));
         }
 
-        return response()->json($products);
+        return response()->json($query->get());
     }
 }
