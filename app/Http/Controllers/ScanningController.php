@@ -173,9 +173,9 @@ class ScanningController extends Controller
         $validated = $request->validate([
             'create_products' => 'boolean',
             'product_data' => 'nullable|array',
-            'product_data.*.name' => 'required_if:create_products,true|string|max:255',
-            'product_data.*.category_id' => 'required_if:create_products,true|exists:categories,id',
-            'product_data.*.unit_id' => 'required_if:create_products,true|exists:units,id'
+            'product_data.name' => 'required_if:create_products,true|string|max:255',
+            'product_data.category_id' => 'required_if:create_products,true|exists:categories,id',
+            'product_data.unit_id' => 'required_if:create_products,true|exists:units,id',
         ]);
 
         try {
@@ -333,8 +333,10 @@ class ScanningController extends Controller
             'asset_status' => 'active',
             'quantity' => 1,
             'quantity_alert' => 1,
-            'category_id' => $productData['category_id'] ?? 1,
-            'unit_id' => $productData['unit_id'] ?? 1,
+            'buying_price' => 0,
+            'selling_price' => 0,
+            'category_id' => $productData['category_id'],
+            'unit_id' => $productData['unit_id'],
             'scan_confidence' => collect($scans)->avg('confidence_score'),
             'last_scanned' => now(),
             'scan_data' => $this->compileScanData($scans)

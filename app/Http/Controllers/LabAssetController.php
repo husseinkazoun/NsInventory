@@ -74,9 +74,11 @@ class LabAssetController extends Controller
         $validated['quantity'] = 1; // Lab assets are typically single items
         $validated['quantity_alert'] = 1;
         $validated['asset_status'] = 'active';
+        $validated['buying_price'] = $validated['buying_price'] ?? 0;
+        $validated['selling_price'] = $validated['selling_price'] ?? 0;
 
         // Handle assignment date
-        if ($validated['assigned_to']) {
+        if (!empty($validated['assigned_to'])) {
             $validated['assignment_date'] = now()->toDateString();
         }
 
@@ -241,7 +243,10 @@ class LabAssetController extends Controller
 
     public function scan()
     {
-        return view('lab-assets.scan');
+        $categories = Category::orderBy('name')->get(['id', 'name']);
+        $units = Unit::orderBy('name')->get(['id', 'name']);
+
+        return view('lab-assets.scan', compact('categories', 'units'));
     }
 
     private function generateUniqueCode(): string

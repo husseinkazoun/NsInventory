@@ -9,13 +9,15 @@ use Illuminate\Support\Facades\Log;
 
 class OpenAIVisionService
 {
-    protected $apiKey;
-    protected $apiUrl;
+    protected string $apiKey;
+    protected string $apiUrl;
+    protected string $model;
 
     public function __construct()
     {
-        $this->apiKey = config('services.openai.api_key') ?: env('OPENAI_API_KEY');
-        $this->apiUrl = 'https://api.openai.com/v1/chat/completions';
+        $this->apiKey = (string) config('services.openai.api_key');
+        $this->apiUrl = rtrim((string) config('services.openai.api_base'), '/') . '/chat/completions';
+        $this->model  = (string) config('services.openai.model');
     }
 
     public function analyzePhoto(PhotoScan $photoScan): array
@@ -25,7 +27,7 @@ class OpenAIVisionService
         }
 
         $imagePath = Storage::disk('public')->path($photoScan->photo_path);
-        
+
         if (!file_exists($imagePath)) {
             throw new \Exception('Photo file not found: ' . $photoScan->photo_path);
         }
@@ -37,7 +39,7 @@ class OpenAIVisionService
             'Authorization' => 'Bearer ' . $this->apiKey,
             'Content-Type' => 'application/json',
         ])->timeout(60)->post($this->apiUrl, [
-            'model' => 'gpt-4-vision-preview',
+            'model' => $this->model,
             'messages' => [
                 [
                     'role' => 'user',
@@ -56,6 +58,7 @@ class OpenAIVisionService
                     ]
                 ]
             ],
+            'response_format' => ['type' => 'json_object'],
             'max_tokens' => 1000,
             'temperature' => 0.1
         ]);

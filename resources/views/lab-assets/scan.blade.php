@@ -293,7 +293,39 @@
                                                     <input type="text" class="form-control" id="location" placeholder="e.g., Lab Room 101">
                                                 </div>
                                             </div>
+                                            <div class="col-md-6">
+                                                <div class="mb-3">
+                                                    <label class="form-label required" for="category-select">Category</label>
+                                                    <select class="form-select" id="category-select" required>
+                                                        <option value="" disabled selected>Select a category</option>
+                                                        @foreach ($categories as $category)
+                                                            <option value="{{ $category->id }}">{{ $category->name }}</option>
+                                                        @endforeach
+                                                    </select>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="mb-3">
+                                                    <label class="form-label required" for="unit-select">Unit</label>
+                                                    <select class="form-select" id="unit-select" required>
+                                                        <option value="" disabled selected>Select a unit</option>
+                                                        @foreach ($units as $unit)
+                                                            <option value="{{ $unit->id }}">{{ $unit->name }}</option>
+                                                        @endforeach
+                                                    </select>
+                                                </div>
+                                            </div>
                                         </div>
+
+                                        @if($categories->isEmpty() || $units->isEmpty())
+                                            <div class="alert alert-warning">
+                                                You need at least one
+                                                @if($categories->isEmpty()) <a href="{{ route('categories.create') }}">category</a> @endif
+                                                @if($categories->isEmpty() && $units->isEmpty()) and @endif
+                                                @if($units->isEmpty()) <a href="{{ route('units.create') }}">unit</a> @endif
+                                                before you can save a scanned asset.
+                                            </div>
+                                        @endif
 
                                         <div id="missing-components" style="display: none;">
                                             <h5>Missing Components:</h5>
@@ -701,15 +733,28 @@ function showPhotoThumbnails() {
 }
 
 async function saveAsset() {
+    const name = document.getElementById('device-name').value.trim();
+    const categoryId = document.getElementById('category-select').value;
+    const unitId = document.getElementById('unit-select').value;
+
+    if (!name) {
+        alert('Please enter a device name before saving.');
+        return;
+    }
+    if (!categoryId || !unitId) {
+        alert('Please select both a category and a unit before saving.');
+        return;
+    }
+
     const assetData = {
         create_products: true,
         product_data: {
-            name: document.getElementById('device-name').value,
-            category_id: 1, // Default category - you might want to make this selectable
-            unit_id: 1 // Default unit - you might want to make this selectable
+            name,
+            category_id: parseInt(categoryId, 10),
+            unit_id: parseInt(unitId, 10),
         }
     };
-    
+
     try {
         const response = await fetch(`/api/scanning/session/${currentSession.id}/complete`, {
             method: 'POST',
