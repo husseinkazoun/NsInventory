@@ -162,7 +162,7 @@
                                         {{ __('Suppliers') }}
                                     </a>
                                     <a class="dropdown-item" href="{{ route('customers.index') }}">
-                                        {{ __('Recipients') }}
+                                        {{ __('Customers') }}
                                     </a>
                                 </div>
                             </div>
