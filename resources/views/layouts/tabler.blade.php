@@ -6,18 +6,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
     <meta http-equiv="X-UA-Compatible" content="ie=edge"/>
     <title>{{ config('app.name') }}</title>
-    <link rel="icon" type="image/x-icon" href="{{ asset('favicon.ico') }}" />
+
+    <link rel="icon" type="image/svg+xml" href="{{ asset('icons/sanad-inventory-favicon.svg') }}">
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ asset('icons/sanad-inventory-32.png') }}">
+    <link rel="icon" type="image/png" sizes="16x16" href="{{ asset('icons/sanad-inventory-16.png') }}">
+    <link rel="shortcut icon" href="{{ asset('favicon.ico') }}">
+    <link rel="apple-touch-icon" sizes="180x180" href="{{ asset('icons/apple-touch-icon.png') }}">
+    <link rel="manifest" href="{{ asset('icons/site.webmanifest') }}">
+    <meta name="theme-color" content="#0B1A33">
+
+    <!-- Fonts: Inter (Latin) + IBM Plex Sans Arabic -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap">
 
     <!-- CSS files -->
     <link href="{{ asset('dist/css/tabler.min.css') }}" rel="stylesheet"/>
+    <link href="{{ asset('static/brand.css') }}" rel="stylesheet"/>
     <style>
-        @import url('https://rsms.me/inter/inter.css');
-        :root {
-            --tblr-font-sans-serif: 'Inter Var', -apple-system, BlinkMacSystemFont, San Francisco, Segoe UI, Roboto, Helvetica Neue, sans-serif;
-        }
-        body {
-            font-feature-settings: "cv03", "cv04", "cv11";
-        }
+        body { font-feature-settings: "cv03", "cv04", "cv11"; }
     </style>
 
     <!-- Custom CSS for specific page.  -->

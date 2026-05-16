@@ -1,0 +1,195 @@
+/*
+ * Phase 2 brand override — NS / Sanad-style polish on top of Tabler.
+ * Loaded AFTER tabler.min.css so it overrides.
+ *
+ * No JavaScript. No @import. Layout changes limited to:
+ *   - resources/views/layouts/body/header.blade.php  (brand swap)
+ *   - resources/views/layouts/auth.blade.php          (brand swap)
+ *   - resources/views/layouts/body/footer.blade.php   (demo-text swap)
+ *
+ * Token source of truth: ~/work/sanad/src/index.css
+ */
+
+/* ───────────────────────── Tokens ───────────────────────── */
+:root {
+    /* Sanad blue primary */
+    --tblr-primary: #1a72e8;
+    --tblr-primary-rgb: 26, 114, 232;
+    --tblr-primary-fg: #ffffff;
+    --tblr-link-color: var(--tblr-primary);
+    --tblr-link-hover-color: #155bc7;
+
+    /* Surfaces */
+    --tblr-body-bg: #f3f4f5;
+    --tblr-bg-surface: #ffffff;
+    --tblr-bg-surface-secondary: #eef0f3;
+
+    /* Borders */
+    --tblr-border-color: #dadde4;
+    --tblr-border-color-translucent: rgba(218, 221, 228, 0.6);
+
+    /* Radii — modest, matches Sanad's 6 px */
+    --tblr-border-radius: 0.375rem;
+    --tblr-border-radius-sm: 0.25rem;
+    --tblr-border-radius-lg: 0.5rem;
+
+    /* Typography stack */
+    --tblr-font-sans-serif: 'Inter', 'IBM Plex Sans Arabic', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+
+    /* NS reusable shadows / focus rings */
+    --ns-shadow-card:        0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px -4px rgba(15, 23, 42, 0.08);
+    --ns-shadow-card-elev:   0 2px 6px rgba(15, 23, 42, 0.04), 0 18px 40px -8px rgba(15, 23, 42, 0.18);
+    --ns-shadow-stat:        0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 16px -4px rgba(15, 23, 42, 0.10);
+    --ns-shadow-stat-hover:  0 2px 4px rgba(15, 23, 42, 0.06), 0 12px 24px -6px rgba(15, 23, 42, 0.14);
+    --ns-shadow-btn:         0 1px 2px rgba(26, 114, 232, 0.20), 0 2px 5px -1px rgba(26, 114, 232, 0.18);
+    --ns-shadow-btn-hover:   0 2px 4px rgba(26, 114, 232, 0.28), 0 6px 14px -2px rgba(26, 114, 232, 0.30);
+    --ns-shadow-navbar:      0 1px 0 rgba(15, 23, 42, 0.02), 0 4px 12px -2px rgba(15, 23, 42, 0.06);
+    --ns-focus-ring:         0 0 0 3px rgba(26, 114, 232, 0.25);
+}
+
+/* ─────────────────────── Body background ─────────────────── */
+/* Main app — three blue radial glows over the cool-gray base */
+body {
+    background:
+        radial-gradient(1100px 600px at 10% -10%, rgba(26, 114, 232, 0.22), transparent 60%),
+        radial-gradient(900px 500px at 90% -5%, rgba(26, 114, 232, 0.14), transparent 55%),
+        radial-gradient(800px 380px at 50% 105%, rgba(26, 114, 232, 0.06), transparent 60%),
+        var(--tblr-body-bg);
+}
+/* Auth/login — single dominant top-center spotlight */
+body.d-flex.flex-column {
+    background:
+        radial-gradient(900px 600px at 50% -10%, rgba(26, 114, 232, 0.24), transparent 60%),
+        radial-gradient(700px 400px at 50% 110%, rgba(26, 114, 232, 0.08), transparent 60%),
+        var(--tblr-body-bg);
+}
+
+/* ─────────────────────── Top header strip ────────────────── */
+header.navbar.navbar-expand-md {
+    background-color: rgba(255, 255, 255, 0.94);
+    -webkit-backdrop-filter: saturate(180%) blur(14px);
+    backdrop-filter: saturate(180%) blur(14px);
+    border-bottom: 1px solid var(--tblr-border-color);
+    box-shadow: var(--ns-shadow-navbar);
+    padding-top: 0.6rem;
+    padding-bottom: 0.6rem;
+}
+
+/* Active main-nav state — stronger Sanad-blue accent */
+.navbar-expand-md .nav-item.active > .nav-link {
+    color: var(--tblr-primary);
+}
+
+/* ────────────────────── NS brand mark ────────────────────── */
+.ns-brand-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.625rem;
+    text-decoration: none;
+}
+.ns-brand-mark {
+    display: inline-block;
+    width: 36px;
+    height: 36px;
+    background: url('/icons/sanad-inventory-tile.svg') center / contain no-repeat;
+    flex-shrink: 0;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.18);
+    border-radius: 5px; /* matches SVG's rx (~15% of 36px) so any outer focus ring sits flush */
+}
+.ns-brand-mark-lg {
+    width: 56px;
+    height: 56px;
+    border-radius: 8px;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.22);
+}
+.ns-brand-text {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    line-height: 1.1;
+    font-weight: 600;
+    font-size: 0.96rem;
+    color: #11141a;
+    text-decoration: none;
+}
+.ns-brand-text-lg {
+    font-size: 1.2rem;
+}
+.ns-brand-sub {
+    font-size: 0.66rem;
+    font-weight: 500;
+    color: #6b7280;
+    letter-spacing: 0.06em;
+    margin-top: 3px;
+    text-transform: uppercase;
+}
+.ns-brand-text-lg .ns-brand-sub {
+    font-size: 0.72rem;
+}
+
+/* ─────────────────────────── Cards ───────────────────────── */
+.card {
+    border-color: var(--tblr-border-color);
+    box-shadow: var(--ns-shadow-card);
+    transition: box-shadow 180ms ease, transform 180ms ease, border-color 180ms ease;
+}
+
+/* Dashboard stat cards — clearer presence + hover lift */
+.card.card-sm {
+    box-shadow: var(--ns-shadow-stat);
+}
+.card.card-sm:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--ns-shadow-stat-hover);
+}
+
+/* Auth/login card — premium feel */
+.page-center .card {
+    box-shadow: var(--ns-shadow-card-elev);
+}
+
+/* ─────────────────── Primary buttons ─────────────────── */
+.btn-primary {
+    box-shadow: var(--ns-shadow-btn);
+    transition: box-shadow 160ms ease, background-color 120ms ease, border-color 120ms ease, transform 80ms ease;
+    font-weight: 500;
+}
+.btn-primary:hover {
+    background-color: var(--tblr-link-hover-color);
+    border-color: var(--tblr-link-hover-color);
+    box-shadow: var(--ns-shadow-btn-hover);
+}
+.btn-primary:focus,
+.btn-primary:focus-visible {
+    outline: none;
+    box-shadow: var(--ns-focus-ring), var(--ns-shadow-btn);
+}
+.btn-primary:active {
+    transform: translateY(1px);
+    box-shadow: var(--ns-shadow-btn);
+}
+
+/* ────────────────────── Forms / focus ───────────────────── */
+.form-control,
+.form-select {
+    border-color: var(--tblr-border-color);
+}
+.form-control:focus,
+.form-select:focus,
+.form-check-input:focus {
+    border-color: var(--tblr-primary);
+    box-shadow: var(--ns-focus-ring);
+}
+
+/* ─────────────────────────── Tables ──────────────────────── */
+.table tbody tr:hover {
+    background-color: rgba(26, 114, 232, 0.05);
+}
+
+/* ────────────────── Page header pretitle ─────────────────── */
+.page-pretitle {
+    color: var(--tblr-primary);
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    text-transform: uppercase;
+}

@@ -4,9 +4,13 @@
         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar-menu" aria-controls="navbar-menu" aria-expanded="false" aria-label="Toggle navigation">
             <span class="navbar-toggler-icon"></span>
         </button>
-        <h1 class="navbar-brand navbar-brand-autodark d-none-navbar-horizontal pe-0 pe-md-3">
-            <a href="{{ url('/') }}">
-                <img src="{{ asset('static/logo.svg') }}" width="110" height="32" alt="Tabler" class="navbar-brand-image">
+        <h1 class="navbar-brand navbar-brand-autodark d-none-navbar-horizontal pe-0 pe-md-3 m-0">
+            <a href="{{ url('/') }}" class="ns-brand-link" aria-label="Sanad Smart Inventory System home">
+                <span class="ns-brand-mark" aria-hidden="true"></span>
+                <span class="ns-brand-text">
+                    Sanad Inventory
+                    <span class="ns-brand-sub">Smart Inventory System</span>
+                </span>
             </a>
         </h1>
 
