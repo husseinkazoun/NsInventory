@@ -15,17 +15,6 @@
                         </a>
                     </li>
 
-                    <li class="nav-item {{ request()->is('products*') ? 'active' : null }}">
-                        <a class="nav-link" href="{{ route('products.index') }}" >
-                            <span class="nav-link-icon d-md-none d-lg-inline-block"><!-- Download SVG icon from http://tabler-icons.io/i/home -->
-                                <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-packages" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M7 16.5l-5 -3l5 -3l5 3v5.5l-5 3z" /><path d="M2 13.5v5.5l5 3" /><path d="M7 16.545l5 -3.03" /><path d="M17 16.5l-5 -3l5 -3l5 3v5.5l-5 3z" /><path d="M12 19l5 3" /><path d="M17 16.5l5 -3" /><path d="M12 13.5v-5.5l-5 -3l5 -3l5 3v5.5" /><path d="M7 5.03v5.455" /><path d="M12 8l5 -3" /></svg>
-                            </span>
-                            <span class="nav-link-title">
-                                {{ __('Products') }}
-                            </span>
-                        </a>
-                    </li>
-
                     <li class="nav-item dropdown {{ request()->is('lab-assets*') ? 'active' : null }}">
                         <a class="nav-link dropdown-toggle" href="#navbar-base" data-bs-toggle="dropdown" data-bs-auto-close="outside" role="button" aria-expanded="false">
                             <span class="nav-link-icon d-md-none d-lg-inline-block">
@@ -78,6 +67,17 @@
                                 </div>
                             </div>
                         </div>
+                    </li>
+
+                    <li class="nav-item {{ request()->is('products*') ? 'active' : null }}">
+                        <a class="nav-link" href="{{ route('products.index') }}" >
+                            <span class="nav-link-icon d-md-none d-lg-inline-block"><!-- Download SVG icon from http://tabler-icons.io/i/home -->
+                                <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-packages" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M7 16.5l-5 -3l5 -3l5 3v5.5l-5 3z" /><path d="M2 13.5v5.5l5 3" /><path d="M7 16.545l5 -3.03" /><path d="M17 16.5l-5 -3l5 -3l5 3v5.5l-5 3z" /><path d="M12 19l5 3" /><path d="M17 16.5l5 -3" /><path d="M12 13.5v-5.5l-5 -3l5 -3l5 3v5.5" /><path d="M7 5.03v5.455" /><path d="M12 8l5 -3" /></svg>
+                            </span>
+                            <span class="nav-link-title">
+                                {{ __('Products') }}
+                            </span>
+                        </a>
                     </li>
 
                     <li class="nav-item dropdown {{ request()->is('orders*') ? 'active' : null }}">
@@ -152,7 +152,7 @@
                               <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-layers-subtract" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M8 4m0 2a2 2 0 0 1 2 -2h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2z" /><path d="M16 16v2a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2h2" /></svg>
                             </span>
                             <span class="nav-link-title">
-                                {{ __('Pages') }}
+                                {{ __('Directory') }}
                             </span>
                         </a>
                         <div class="dropdown-menu">
@@ -162,7 +162,7 @@
                                         {{ __('Suppliers') }}
                                     </a>
                                     <a class="dropdown-item" href="{{ route('customers.index') }}">
-                                        {{ __('Customers') }}
+                                        {{ __('Recipients') }}
                                     </a>
                                 </div>
                             </div>

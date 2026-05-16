@@ -31,10 +31,6 @@ use App\Http\Controllers\Product\ProductImportController;;
 |
 */
 
-Route::get('php/', function () {
-    return phpinfo();
-});
-
 Route::get('/', function () {
     return redirect()->route('dashboard');
 });
@@ -127,8 +123,3 @@ Route::middleware(['auth'])->group(function () {
 });
 
 require __DIR__.'/auth.php';
-
-Route::get('test/', function (){
-//    return view('test');
-    return view('orders.create');
-});
