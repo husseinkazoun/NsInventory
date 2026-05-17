@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -15,11 +16,12 @@ import { Button } from '../components/ui/Button'
 import {
   type AssetCondition,
   type AssetStatus,
+  type LabAsset,
   activityByAsset,
-  getAssetById,
   inspectionByAsset,
   missingByAsset,
 } from '../lib/mockData'
+import { getLabAsset } from '../lib/queries/labAssets'
 import { formatRelative } from '../lib/format'
 
 function statusTone(s: AssetStatus): BadgeTone {
@@ -48,24 +50,62 @@ function formatDate(d: Date | null): string {
 
 export default function LabAssetDetail() {
   const { assetId = '' } = useParams<{ assetId: string }>()
-  const asset = getAssetById(assetId)
+  const [asset, setAsset] = useState<LabAsset | null>(null)
+  const [loading, setLoading] = useState<boolean>(true)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
-  if (!asset) {
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setErrorMsg(null)
+    setAsset(null)
+    getLabAsset(assetId)
+      .then((a) => {
+        if (cancelled) return
+        setAsset(a)
+        setLoading(false)
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return
+        setErrorMsg(e instanceof Error ? e.message : String(e))
+        setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [assetId])
+
+  const backLink = (
+    <div className="mb-4">
+      <Link
+        to="/lab-assets"
+        className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-ns-blue"
+      >
+        <ArrowLeft className="h-4 w-4" />
+        Back to Lab Assets
+      </Link>
+    </div>
+  )
+
+  if (loading) {
     return (
       <>
-        <div className="mb-4">
-          <Link
-            to="/lab-assets"
-            className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-ns-blue"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back to Lab Assets
-          </Link>
+        {backLink}
+        <div className="rounded-xl border border-ns-border-soft bg-white px-6 py-12 text-center text-sm text-slate-500 shadow-ns-card">
+          Loading…
         </div>
+      </>
+    )
+  }
+
+  if (errorMsg) {
+    return (
+      <>
+        {backLink}
         <EmptyState
-          Icon={Microscope}
-          title="Asset not found"
-          description={`No lab asset with id "${assetId}" exists in the prototype data.`}
+          Icon={AlertTriangle}
+          title="Couldn't load asset"
+          description={errorMsg}
           action={
             <Button to="/lab-assets" variant="secondary">
               Return to list
@@ -76,21 +116,34 @@ export default function LabAssetDetail() {
     )
   }
 
+  if (!asset) {
+    return (
+      <>
+        {backLink}
+        <EmptyState
+          Icon={Microscope}
+          title="Asset not found"
+          description={`No lab asset with id "${assetId}" exists.`}
+          action={
+            <Button to="/lab-assets" variant="secondary">
+              Return to list
+            </Button>
+          }
+        />
+      </>
+    )
+  }
+
+  // Detail panels still source from mock helpers. In Supabase mode the ids
+  // are UUIDs and these lookups will simply be empty — the panels render
+  // their "nothing yet" copy. Commit 3 will populate them from real tables.
   const inspection = inspectionByAsset[asset.id]
   const missing = missingByAsset[asset.id] ?? []
   const activity = activityByAsset[asset.id] ?? []
 
   return (
     <>
-      <div className="mb-4">
-        <Link
-          to="/lab-assets"
-          className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-ns-blue"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to Lab Assets
-        </Link>
-      </div>
+      {backLink}
 
       <PageHeader
         pretitle={`Operations · Assets · ${asset.tag}`}
@@ -108,7 +161,7 @@ export default function LabAssetDetail() {
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Asset details */}
+        {/* Details */}
         <section className="rounded-xl bg-white border border-ns-border-soft shadow-ns-card p-5">
           <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ns-navy-soft mb-3">
             Details
@@ -128,16 +181,18 @@ export default function LabAssetDetail() {
             </dd>
 
             <dt className="col-span-1 text-slate-500">Manufacturer</dt>
-            <dd className="col-span-2 text-ns-navy">{asset.manufacturer}</dd>
+            <dd className="col-span-2 text-ns-navy">{asset.manufacturer || <span className="text-slate-400">—</span>}</dd>
 
             <dt className="col-span-1 text-slate-500">Model</dt>
-            <dd className="col-span-2 text-ns-navy">{asset.model}</dd>
+            <dd className="col-span-2 text-ns-navy">{asset.model || <span className="text-slate-400">—</span>}</dd>
 
             <dt className="col-span-1 text-slate-500">Serial</dt>
-            <dd className="col-span-2 font-mono text-xs text-ns-navy">{asset.serial}</dd>
+            <dd className="col-span-2 font-mono text-xs text-ns-navy">
+              {asset.serial || <span className="text-slate-400 font-sans">—</span>}
+            </dd>
 
             <dt className="col-span-1 text-slate-500">Location</dt>
-            <dd className="col-span-2 text-ns-navy">{asset.location}</dd>
+            <dd className="col-span-2 text-ns-navy">{asset.location || <span className="text-slate-400">—</span>}</dd>
 
             <dt className="col-span-1 text-slate-500">Assigned to</dt>
             <dd className="col-span-2 text-ns-navy">
@@ -268,7 +323,8 @@ export default function LabAssetDetail() {
       </div>
 
       <p className="mt-6 text-xs text-slate-400">
-        Mocked data. Edit, real scanning, and live activity will land in later phases.
+        Inspection, missing-component, and activity panels stay mocked in this commit. Real
+        scan history lands in the next phase.
       </p>
     </>
   )

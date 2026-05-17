@@ -1,9 +1,11 @@
 import { useState, type FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, Save } from 'lucide-react'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Button } from '../components/ui/Button'
 import type { AssetCondition, AssetStatus } from '../lib/mockData'
+import { createLabAsset } from '../lib/queries/labAssets'
+import { isSupabaseConfigured } from '../lib/supabaseClient'
 
 type FormState = {
   name: string
@@ -35,21 +37,53 @@ const fieldInput =
   'w-full h-10 px-3 rounded-lg border border-ns-border-soft bg-white text-sm text-ns-navy placeholder:text-slate-400 focus:outline-none focus:border-ns-blue focus:ring-4 focus:ring-ns-blue/15'
 
 export default function LabAssetNew() {
+  const navigate = useNavigate()
   const [form, setForm] = useState<FormState>(empty)
   const [submitted, setSubmitted] = useState(false)
+  const [submittedTag, setSubmittedTag] = useState<string>('')
+  const [busy, setBusy] = useState(false)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }))
   }
 
-  function handleSubmit(e: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
-    setSubmitted(true)
+    setBusy(true)
+    setErrorMsg(null)
+    try {
+      const created = await createLabAsset({
+        name: form.name,
+        tag: form.tag,
+        manufacturer: form.manufacturer || undefined,
+        model: form.model || undefined,
+        serial: form.serial || undefined,
+        location: form.location || undefined,
+        condition: form.condition,
+        status: form.status,
+      })
+
+      if (isSupabaseConfigured) {
+        // Supabase mode: jump straight to the new asset's detail page.
+        navigate(`/lab-assets/${created.id}`, { replace: true })
+      } else {
+        // Demo mode: keep the existing inline "Mock save" success UX.
+        setSubmittedTag(form.tag)
+        setSubmitted(true)
+      }
+    } catch (e: unknown) {
+      setErrorMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
   }
 
   function reset() {
     setForm(empty)
     setSubmitted(false)
+    setSubmittedTag('')
+    setErrorMsg(null)
   }
 
   return (
@@ -75,14 +109,23 @@ export default function LabAssetNew() {
           <div className="flex-1">
             <div className="font-semibold">Mock save — no data was actually persisted.</div>
             <div className="mt-0.5">
-              In a real build this would create asset{' '}
-              <span className="font-mono">{form.tag || '(no tag)'}</span>{' '}
-              and route you to its detail page.
+              In Supabase mode this would create asset{' '}
+              <span className="font-mono">{submittedTag || '(no tag)'}</span> and route
+              you to its detail page.
             </div>
           </div>
           <Button variant="ghost" onClick={reset}>
             Add another
           </Button>
+        </div>
+      )}
+
+      {errorMsg && (
+        <div
+          role="alert"
+          className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800"
+        >
+          Couldn't save the asset: {errorMsg}
         </div>
       )}
 
@@ -213,14 +256,15 @@ export default function LabAssetNew() {
           <Button to="/lab-assets" variant="secondary">
             Cancel
           </Button>
-          <Button type="submit" Icon={Save}>
-            Save Lab Asset
+          <Button type="submit" Icon={Save} disabled={busy}>
+            {busy ? 'Saving…' : 'Save Lab Asset'}
           </Button>
         </div>
       </form>
 
       <p className="mt-4 text-xs text-slate-400">
-        Mock form — submissions are not persisted yet.
+        Assignment as a name string is informational; a member picker arrives once
+        organization profiles are seeded.
       </p>
     </>
   )
