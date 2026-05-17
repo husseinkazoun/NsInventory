@@ -1,4 +1,3 @@
-import { Link } from 'react-router-dom'
 import {
   Plus,
   Clock,
@@ -14,6 +13,7 @@ import { PageHeader } from '../components/ui/PageHeader'
 import { SectionTitle } from '../components/ui/SectionTitle'
 import { StatCard } from '../components/ui/StatCard'
 import { QuickActionTile } from '../components/ui/QuickActionTile'
+import { Button } from '../components/ui/Button'
 import { kpis } from '../lib/mockData'
 import { formatNumber as fmt } from '../lib/format'
 
@@ -24,13 +24,9 @@ export default function Dashboard() {
         pretitle="Operations · Overview"
         title="Dashboard"
         actions={
-          <Link
-            to="/lab-assets"
-            className="inline-flex items-center gap-2 rounded-lg bg-ns-blue px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:bg-ns-blue/90 focus:outline-none focus:ring-4 focus:ring-ns-blue/25"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
+          <Button to="/lab-assets/new" Icon={Plus}>
             Add Lab Asset
-          </Link>
+          </Button>
         }
       />
 
@@ -105,7 +101,7 @@ export default function Dashboard() {
       <SectionTitle>Quick Actions</SectionTitle>
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
         <QuickActionTile
-          to="/lab-assets"
+          to="/scan/start"
           Icon={Camera}
           title="Start Photo Scan"
           description="Intake or inspect a lab asset by photo"
@@ -117,7 +113,7 @@ export default function Dashboard() {
           description="Record a procurement order"
         />
         <QuickActionTile
-          to="/lab-assets"
+          to="/lab-assets/new"
           Icon={Plus}
           title="Add Lab Asset"
           description="Register equipment or instruments"

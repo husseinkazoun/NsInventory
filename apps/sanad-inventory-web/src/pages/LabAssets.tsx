@@ -1,15 +1,20 @@
+import { Link, useNavigate } from 'react-router-dom'
 import { Plus, Camera } from 'lucide-react'
 import { PageHeader } from '../components/ui/PageHeader'
-import { labAssets } from '../lib/mockData'
+import { Button } from '../components/ui/Button'
+import { Badge, type BadgeTone } from '../components/ui/Badge'
+import { type AssetStatus, labAssets } from '../lib/mockData'
 
-const statusStyles: Record<string, string> = {
-  active:      'bg-emerald-100 text-emerald-700',
-  maintenance: 'bg-amber-100 text-amber-700',
-  inactive:    'bg-slate-100 text-slate-600',
-  disposed:    'bg-rose-100 text-rose-700',
+function statusTone(s: AssetStatus): BadgeTone {
+  if (s === 'active') return 'success'
+  if (s === 'maintenance') return 'warning'
+  if (s === 'disposed') return 'critical'
+  return 'neutral'
 }
 
 export default function LabAssets() {
+  const navigate = useNavigate()
+
   return (
     <>
       <PageHeader
@@ -17,20 +22,12 @@ export default function LabAssets() {
         title="Lab Assets"
         actions={
           <>
-            <button
-              type="button"
-              className="inline-flex items-center gap-2 rounded-lg border border-ns-border-soft bg-white px-3.5 py-2 text-sm font-medium text-ns-navy hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-ns-blue/15"
-            >
-              <Camera className="h-4 w-4" aria-hidden="true" />
+            <Button to="/scan/start" variant="secondary" Icon={Camera}>
               Start Photo Scan
-            </button>
-            <button
-              type="button"
-              className="inline-flex items-center gap-2 rounded-lg bg-ns-blue px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:bg-ns-blue/90 focus:outline-none focus:ring-4 focus:ring-ns-blue/25"
-            >
-              <Plus className="h-4 w-4" aria-hidden="true" />
+            </Button>
+            <Button to="/lab-assets/new" Icon={Plus}>
               Add Lab Asset
-            </button>
+            </Button>
           </>
         }
       />
@@ -50,19 +47,33 @@ export default function LabAssets() {
             </thead>
             <tbody className="divide-y divide-ns-border-soft">
               {labAssets.map((a) => (
-                <tr key={a.id} className="hover:bg-ns-blue-tint/40 transition-colors">
-                  <td className="px-4 py-3 font-mono text-xs text-slate-600">{a.tag}</td>
-                  <td className="px-4 py-3 text-ns-navy font-medium">{a.name}</td>
+                <tr
+                  key={a.id}
+                  onClick={() => navigate(`/lab-assets/${a.id}`)}
+                  className="hover:bg-ns-blue-tint/40 cursor-pointer transition-colors"
+                >
+                  <td className="px-4 py-3 font-mono text-xs">
+                    <Link
+                      to={`/lab-assets/${a.id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-slate-600 hover:text-ns-blue"
+                    >
+                      {a.tag}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3">
+                    <Link
+                      to={`/lab-assets/${a.id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-ns-navy font-medium hover:text-ns-blue"
+                    >
+                      {a.name}
+                    </Link>
+                  </td>
                   <td className="px-4 py-3 text-slate-600">{a.manufacturer}</td>
                   <td className="px-4 py-3 text-slate-600">{a.location}</td>
                   <td className="px-4 py-3">
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium capitalize ${
-                        statusStyles[a.status] ?? 'bg-slate-100 text-slate-600'
-                      }`}
-                    >
-                      {a.status}
-                    </span>
+                    <Badge tone={statusTone(a.status)}>{a.status}</Badge>
                   </td>
                   <td className="px-4 py-3 text-slate-600">
                     {a.assignedTo ?? <span className="text-slate-400">—</span>}
@@ -75,7 +86,7 @@ export default function LabAssets() {
       </div>
 
       <p className="mt-4 text-xs text-slate-400">
-        Mocked data. Asset CRUD, photo scanning, and AI inspection workflows will land in later phases.
+        Mocked data. Click a row to view asset details. Real CRUD, scanning, and AI inspection workflows will land in later phases.
       </p>
     </>
   )
