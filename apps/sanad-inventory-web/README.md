@@ -42,6 +42,25 @@ npm run dev
 
 Open <http://127.0.0.1:5174/>. The dev port is **5174** so it doesn't clash with the Laravel root Vite on 5173.
 
+### Demo mode vs Supabase mode
+
+The app boots in one of two modes depending on env vars:
+
+| Mode | Trigger | Behaviour |
+|---|---|---|
+| **Demo** | `VITE_SUPABASE_URL` and/or `VITE_SUPABASE_ANON_KEY` unset | Mock data renders, `AuthGuard` is bypassed, header shows the placeholder "Admin" identity, the `/login` page surfaces a yellow "demo mode" notice. Used for offline previews and design reviews. |
+| **Supabase** | Both env vars set | Routes are guarded by `AuthGuard`; unauthenticated visits redirect to `/login`. The header reflects the real signed-in profile and adds a sign-out button. |
+
+To enable Supabase mode locally:
+
+```bash
+cp .env.example .env.local
+# fill in VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY
+npm run dev
+```
+
+`.env.local` is gitignored.
+
 ### Other scripts
 
 ```bash

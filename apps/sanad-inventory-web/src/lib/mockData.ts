@@ -56,7 +56,7 @@ export const kpis: DashboardKPIs = {
   missingComponents: 2,
   activeLabAssets: 24,
   products: 158,
-  productsLowStock: 6,
+  productsLowStock: 3,
   categories: 14,
   recentScans: 5,
   quotations: 19,

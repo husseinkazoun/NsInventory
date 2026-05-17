@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
+import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Products from './pages/Products'
 import LabAssets from './pages/LabAssets'
@@ -10,27 +11,42 @@ import Purchases from './pages/Purchases'
 import Quotations from './pages/Quotations'
 import Directory from './pages/Directory'
 import Settings from './pages/Settings'
+import { AppShellLayout } from './components/layout/AppShellLayout'
+import { AuthGuard } from './components/auth/AuthGuard'
 
 export function AppRoutes() {
   return (
     <Routes>
-      <Route path="/" element={<Navigate to="/dashboard" replace />} />
-      <Route path="/dashboard" element={<Dashboard />} />
+      {/* Public */}
+      <Route path="/login" element={<Login />} />
 
-      {/* Lab Assets — order matters: /new before /:assetId */}
-      <Route path="/lab-assets" element={<LabAssets />} />
-      <Route path="/lab-assets/new" element={<LabAssetNew />} />
-      <Route path="/lab-assets/:assetId" element={<LabAssetDetail />} />
+      {/* Protected — everything below renders inside <AppShell> */}
+      <Route
+        element={
+          <AuthGuard>
+            <AppShellLayout />
+          </AuthGuard>
+        }
+      >
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<Dashboard />} />
 
-      <Route path="/scan/start" element={<ScanStart />} />
+        {/* Lab Assets — order matters: /new before /:assetId */}
+        <Route path="/lab-assets" element={<LabAssets />} />
+        <Route path="/lab-assets/new" element={<LabAssetNew />} />
+        <Route path="/lab-assets/:assetId" element={<LabAssetDetail />} />
 
-      <Route path="/products" element={<Products />} />
-      <Route path="/orders" element={<Orders />} />
-      <Route path="/purchases" element={<Purchases />} />
-      <Route path="/quotations" element={<Quotations />} />
-      <Route path="/directory" element={<Directory />} />
-      <Route path="/settings" element={<Settings />} />
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/scan/start" element={<ScanStart />} />
+
+        <Route path="/products" element={<Products />} />
+        <Route path="/orders" element={<Orders />} />
+        <Route path="/purchases" element={<Purchases />} />
+        <Route path="/quotations" element={<Quotations />} />
+        <Route path="/directory" element={<Directory />} />
+        <Route path="/settings" element={<Settings />} />
+
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Route>
     </Routes>
   )
 }
