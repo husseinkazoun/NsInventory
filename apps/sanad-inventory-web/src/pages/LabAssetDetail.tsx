@@ -6,7 +6,6 @@ import {
   ClipboardCheck,
   AlertTriangle,
   Activity,
-  Pencil,
   Camera,
 } from 'lucide-react'
 import { PageHeader } from '../components/ui/PageHeader'
@@ -149,14 +148,9 @@ export default function LabAssetDetail() {
         pretitle={`Operations · Assets · ${asset.tag}`}
         title={asset.name}
         actions={
-          <>
-            <Button to={`/scan/start?asset=${asset.id}`} variant="secondary" Icon={Camera}>
-              Inspect by Scan
-            </Button>
-            <Button variant="primary" Icon={Pencil} disabled>
-              Edit
-            </Button>
-          </>
+          <Button to={`/scan/start?asset=${asset.id}`} variant="secondary" Icon={Camera}>
+            Inspect by Scan
+          </Button>
         }
       />
 

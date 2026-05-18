@@ -1,4 +1,4 @@
-import { supabase } from '../supabaseClient'
+import { currentUserId, supabase } from '../supabaseClient'
 import { DEV_ORG_ID, createLabAsset } from './labAssets'
 import type { AssetCondition } from '../mockData'
 
@@ -296,12 +296,14 @@ export async function completeScanSession(input: {
   // Activity log entry — RLS-checked via is_org_member.
   if (labAssetId) {
     const pct = Math.round((input.extracted.confidence ?? 0) * 100)
+    const performedBy = await currentUserId()
     await supabase.from('activity_log').insert({
       organization_id: DEV_ORG_ID,
       entity_type: 'lab_asset',
       entity_id: labAssetId,
       action: 'scanned',
       description: `Photo scan completed (${pct}% confidence)`,
+      performed_by: performedBy,
       meta: {
         scan_type: input.scanType,
         scan_session_id: input.scanSessionId,

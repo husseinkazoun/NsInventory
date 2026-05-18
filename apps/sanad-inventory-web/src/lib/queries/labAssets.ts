@@ -1,4 +1,4 @@
-import { supabase } from '../supabaseClient'
+import { currentUserId, supabase } from '../supabaseClient'
 import {
   labAssets as mockLabAssets,
   type AssetCondition,
@@ -114,6 +114,7 @@ export async function createLabAsset(input: CreateLabAssetInput): Promise<LabAss
     }
   }
 
+  const createdBy = await currentUserId()
   const { data, error } = await supabase
     .from('lab_assets')
     .insert({
@@ -126,6 +127,7 @@ export async function createLabAsset(input: CreateLabAssetInput): Promise<LabAss
       location: input.location ?? null,
       condition: input.condition,
       status: input.status,
+      created_by: createdBy,
     })
     .select(SELECT)
     .single()

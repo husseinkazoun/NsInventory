@@ -31,7 +31,7 @@ export function AppRoutes() {
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
 
-        {/* Lab Assets — order matters: /new before /:assetId */}
+        {/* Lab Assets — React Router 6 picks the static /new over /:assetId by specificity. */}
         <Route path="/lab-assets" element={<LabAssets />} />
         <Route path="/lab-assets/new" element={<LabAssetNew />} />
         <Route path="/lab-assets/:assetId" element={<LabAssetDetail />} />

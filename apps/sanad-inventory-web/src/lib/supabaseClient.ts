@@ -17,3 +17,12 @@ export const supabase: SupabaseClient | null =
     : null
 
 export const isSupabaseConfigured: boolean = supabase !== null
+
+// Resolve the signed-in user's id from the cached session (no network call).
+// Returns null in demo mode or when no session is available, so callers can
+// safely fall back to leaving audit fields null.
+export async function currentUserId(): Promise<string | null> {
+  if (!supabase) return null
+  const { data } = await supabase.auth.getSession()
+  return data.session?.user?.id ?? null
+}
