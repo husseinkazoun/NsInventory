@@ -166,7 +166,14 @@ export const missingByAsset: Record<string, MissingComponentRecord[]> = {
   ],
 }
 
-export type ActivityEventType = 'created' | 'scanned' | 'assigned' | 'maintenance' | 'condition_changed'
+export type ActivityEventType =
+  | 'created'
+  | 'updated'
+  | 'deleted'
+  | 'assigned'
+  | 'scanned'
+  | 'condition_changed'
+  | 'maintenance'
 
 export type ActivityEvent = {
   id: string

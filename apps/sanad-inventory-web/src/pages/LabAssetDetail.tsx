@@ -13,14 +13,19 @@ import { Badge, type BadgeTone } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
 import { Button } from '../components/ui/Button'
 import {
+  type ActivityEvent,
   type AssetCondition,
   type AssetStatus,
+  type InspectionSummary,
   type LabAsset,
-  activityByAsset,
-  inspectionByAsset,
-  missingByAsset,
+  type MissingComponentRecord,
 } from '../lib/mockData'
 import { getLabAsset } from '../lib/queries/labAssets'
+import {
+  getInspectionSummary,
+  listMissingComponents,
+  listRecentActivity,
+} from '../lib/queries/assetDetailPanels'
 import { formatRelative } from '../lib/format'
 
 function statusTone(s: AssetStatus): BadgeTone {
@@ -50,6 +55,9 @@ function formatDate(d: Date | null): string {
 export default function LabAssetDetail() {
   const { assetId = '' } = useParams<{ assetId: string }>()
   const [asset, setAsset] = useState<LabAsset | null>(null)
+  const [inspection, setInspection] = useState<InspectionSummary | null>(null)
+  const [missing, setMissing] = useState<MissingComponentRecord[]>([])
+  const [activity, setActivity] = useState<ActivityEvent[]>([])
   const [loading, setLoading] = useState<boolean>(true)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
@@ -58,17 +66,44 @@ export default function LabAssetDetail() {
     setLoading(true)
     setErrorMsg(null)
     setAsset(null)
-    getLabAsset(assetId)
-      .then((a) => {
+    setInspection(null)
+    setMissing([])
+    setActivity([])
+
+    // Asset is the gating fetch — its failure surfaces in the error UI.
+    // Each panel query has its own catch so one bad panel doesn't take
+    // down the page; it just renders its empty state.
+    Promise.all([
+      getLabAsset(assetId),
+      getInspectionSummary(assetId).catch((e: unknown) => {
+        console.warn('inspection summary fetch failed:', e)
+        return null
+      }),
+      listMissingComponents(assetId).catch((e: unknown) => {
+        console.warn('missing components fetch failed:', e)
+        return [] as MissingComponentRecord[]
+      }),
+      listRecentActivity(assetId).catch((e: unknown) => {
+        console.warn('activity log fetch failed:', e)
+        return [] as ActivityEvent[]
+      }),
+    ])
+      .then(([a, insp, miss, act]) => {
         if (cancelled) return
         setAsset(a)
-        setLoading(false)
+        setInspection(insp)
+        setMissing(miss)
+        setActivity(act)
       })
       .catch((e: unknown) => {
         if (cancelled) return
         setErrorMsg(e instanceof Error ? e.message : String(e))
+      })
+      .finally(() => {
+        if (cancelled) return
         setLoading(false)
       })
+
     return () => {
       cancelled = true
     }
@@ -132,13 +167,6 @@ export default function LabAssetDetail() {
       </>
     )
   }
-
-  // Detail panels still source from mock helpers. In Supabase mode the ids
-  // are UUIDs and these lookups will simply be empty — the panels render
-  // their "nothing yet" copy. Commit 3 will populate them from real tables.
-  const inspection = inspectionByAsset[asset.id]
-  const missing = missingByAsset[asset.id] ?? []
-  const activity = activityByAsset[asset.id] ?? []
 
   return (
     <>
@@ -315,11 +343,6 @@ export default function LabAssetDetail() {
           )}
         </section>
       </div>
-
-      <p className="mt-6 text-xs text-slate-400">
-        Inspection, missing-component, and activity panels stay mocked in this commit. Real
-        scan history lands in the next phase.
-      </p>
     </>
   )
 }
