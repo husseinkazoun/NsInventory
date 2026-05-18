@@ -18,11 +18,17 @@ A minimal, polished app shell that mirrors the Laravel dashboard's visual direct
 
 ### Routes
 
+`/login` is public; everything else is wrapped in `AuthGuard` (transparent in demo mode, real session-gated in Supabase mode).
+
 | Route | Status |
 |---|---|
-| `/dashboard` | Full visual: pretitle "Operations · Overview", title "Dashboard", Add Lab Asset CTA, Needs Attention / Inventory Pulse / Quick Actions sections, 8 KPI stat cards, 3 quick-action tiles |
-| `/lab-assets` | Mock table (5 rows) with status badge styling |
-| `/products` | Mock table (5 rows) with low-stock highlighting |
+| `/login` | Sanad-branded sign-in surface (real `signInWithPassword` in Supabase mode; demo-mode notice when env unset) |
+| `/dashboard` | Full visual: pretitle "Operations · Overview", title "Dashboard", Add Lab Asset CTA, Needs Attention / Inventory Pulse / Quick Actions sections, 8 KPI stat cards, 3 quick-action tiles (mock KPIs) |
+| `/lab-assets` | Live in Supabase mode, mock fallback in demo mode; clickable rows route to detail |
+| `/lab-assets/new` | Form-driven create; in Supabase mode redirects to detail page on success |
+| `/lab-assets/:assetId` | Live read in Supabase mode; Inspection / Missing Components / Recent Activity panels still read from mock helpers (cutover planned) |
+| `/scan/start` | 4-step Photo Scan flow (type → capture → review → done); real upload + Edge Function call in Supabase mode, hardcoded fixture in demo |
+| `/products` | Mock table (8 rows) with search, category filter, low-stock segmented control, EmptyState |
 | `/orders` | Placeholder card — "Coming soon" |
 | `/purchases` | Placeholder card — "Coming soon" |
 | `/quotations` | Placeholder card — "Coming soon" |
@@ -61,11 +67,17 @@ npm run dev
 
 `.env.local` is gitignored.
 
+### Cloudflare Pages note
+
+`public/_redirects` ships with the SPA fallback rule `/*  /index.html  200`. Vite copies it verbatim into `dist/_redirects` at build time, so Cloudflare Pages resolves deep-link refreshes (e.g. `/lab-assets/:id`, `/scan/start`) to the SPA shell out of the box — no extra `wrangler.toml` or `_routes.json` needed.
+
+When wiring the Pages project, set its **root directory** to `apps/sanad-inventory-web`, build command to `npm run build`, output directory to `dist`, and add `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` under Environment variables.
+
 ---
 
 ## Photo Scan flow
 
-The `/scan/start` route walks through a 3-step intake or inspection workflow:
+The `/scan/start` route walks through a 4-step intake or inspection workflow:
 
 1. **Choose type** — `intake`, `condition`, or `missing`
 2. **Capture** — pick an image via the file input (`accept="image/*"` opens the system camera on mobile)
@@ -123,25 +135,37 @@ npm run typecheck   # tsc --noEmit only
 
 ## What is mocked
 
-- KPI counts on the dashboard (`src/lib/mockData.ts` → `kpis`)
-- 5 product rows
-- 5 lab asset rows
-- No real auth, no real data, no real API calls
+What's in `src/lib/mockData.ts` with typed records:
 
-Everything is in `src/lib/mockData.ts` with typed records — swap to API calls when the backend lands.
+- Dashboard KPI counts (`kpis`) — pure mock, no live source yet
+- 8 product rows — used by `/products` until a real `products` table lands
+- 5 lab asset rows — used as the demo-mode fallback for the live `lab_assets` queries
+- Per-asset Inspection / Missing Components / Recent Activity records — used by `/lab-assets/:assetId` panels until those panels are wired to the real `photo_scans`, `missing_components`, and `activity_log` tables
+
+Even in Supabase mode some of the above still renders from mock data (notably the Dashboard KPIs and the Lab Asset detail panels) — see "What is intentionally NOT wired yet" below for what's pending.
 
 ---
 
 ## What is intentionally NOT wired yet
 
-- No backend / API
-- No database
-- No authentication
-- No Cloudflare deployment, no DNS, no production config
-- No CI/CD
-- No tests yet (planned for a later phase)
-- No internationalization
-- No state management library (React local state + URL is enough for this prototype)
+Phase 2 brought a real Supabase backend online in code; provisioning, the rest of the modules, and the real AI are still to come.
+
+**In code, already in place:**
+- Supabase client + session/auth shell (`src/lib/supabaseClient.ts`, `src/lib/session.tsx`, `src/components/auth/AuthGuard.tsx`)
+- Real `signInWithPassword` login surface (`src/pages/Login.tsx`)
+- Migrations for the lab-assets and scans domain: `lab_assets`, `scan_sessions`, `photo_scans`, `missing_components`, `activity_log`, plus the `organizations` / `profiles` / `organization_members` skeleton, all with RLS gated by `is_org_member()`
+- Storage bucket `lab-asset-scans` with path-based RLS via `scan_object_org(name)`
+- `scan-process` Edge Function (Deno) returning deterministic mock JSON keyed by scan type
+- Cloudflare Pages SPA fallback via `public/_redirects`
+
+**Not yet:**
+- No live Supabase project is provisioned — the migrations and seed are ready to run, but no `<project-ref>` has been linked. Demo mode is the only mode that runs today.
+- No Cloudflare Pages project, no DNS for `sanadinventory.com`
+- Dashboard KPIs still render from `mockData.kpis`; the Lab Asset detail panels (Inspection / Missing / Activity) still read from mock helpers
+- Products / Orders / Purchases / Quotations / Directory / Settings pages are still mock-only or placeholder
+- `DEV_ORG_ID` is hardcoded in `queries/labAssets.ts` and `queries/scans.ts` — to be replaced with a `useCurrentOrg()` hook reading from `organization_members`
+- The `scan-process` Edge Function still returns deterministic mock JSON — no real vision provider (OpenAI / Anthropic Claude Vision / Gemini) is wired
+- No CI/CD, no tests (planned for a later phase), no i18n, no state-management library beyond React local state + URL params
 
 ---
 
@@ -167,20 +191,39 @@ Brand tokens live in `tailwind.config.ts`:
 
 ```
 apps/sanad-inventory-web/
-├── public/icons/              ← copied brand assets
+├── public/
+│   ├── icons/                       ← copied brand assets
+│   └── _redirects                   ← Cloudflare Pages SPA fallback
 ├── src/
-│   ├── main.tsx               ← entry, mounts <App />
-│   ├── App.tsx                ← wraps <AppRoutes /> in <AppShell />
-│   ├── routes.tsx             ← React Router routes
-│   ├── styles/globals.css     ← Tailwind + brand utility classes
+│   ├── main.tsx                     ← entry, mounts <App /> in <BrowserRouter> + <SessionProvider>
+│   ├── App.tsx                      ← renders <AppRoutes />
+│   ├── routes.tsx                   ← React Router routes (public /login + AuthGuard'd shell)
+│   ├── styles/globals.css           ← Tailwind + brand utility classes
 │   ├── lib/
-│   │   ├── mockData.ts        ← typed KPIs, products, lab assets
-│   │   └── format.ts          ← Intl number / relative date
+│   │   ├── mockData.ts              ← typed KPIs, products, lab assets, panel fixtures
+│   │   ├── format.ts                ← Intl number / relative date
+│   │   ├── supabaseClient.ts        ← singleton Supabase client (null in demo mode) + currentUserId()
+│   │   ├── session.tsx              ← <SessionProvider> + useSession() + signOut()
+│   │   └── queries/
+│   │       ├── labAssets.ts         ← listLabAssets / getLabAsset / createLabAsset (mock fallback)
+│   │       └── scans.ts             ← startScanSession / uploadScanPhoto / processScanPhoto /
+│   │                                   completeScanSession (mock fallback + offline-mock recovery)
 │   ├── components/
+│   │   ├── auth/AuthGuard.tsx       ← demo-mode bypass, Supabase-mode session gate
 │   │   ├── brand/BrandMark.tsx
-│   │   ├── layout/{AppShell,Header,Sidebar}.tsx
-│   │   └── ui/{StatCard,SectionTitle,QuickActionTile,PageHeader}.tsx
-│   └── pages/                 ← one component per route
+│   │   ├── layout/{AppShell,AppShellLayout,Header,Sidebar}.tsx
+│   │   └── ui/{Badge,Button,EmptyState,PageHeader,QuickActionTile,SectionTitle,StatCard}.tsx
+│   └── pages/                       ← one component per route (Login, Dashboard,
+│                                       LabAssets, LabAssetDetail, LabAssetNew, ScanStart,
+│                                       Products, Orders, Purchases, Quotations,
+│                                       Directory, Settings)
+├── supabase/
+│   ├── config.toml                  ← local Supabase CLI project config
+│   ├── seed.sql                     ← idempotent dev seed mirroring mockData 1:1
+│   ├── migrations/
+│   │   ├── 0001_initial.sql         ← org / profiles / categories / units / lab_assets / activity_log + RLS
+│   │   └── 0002_scans.sql           ← scan_sessions / photo_scans / missing_components + storage RLS
+│   └── functions/scan-process/      ← Deno Edge Function (deterministic mock JSON for now)
 └── tailwind.config.ts / vite.config.ts / tsconfig*.json
 ```
 
