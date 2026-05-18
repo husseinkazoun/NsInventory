@@ -1,0 +1,10 @@
+node_modules
+dist
+.DS_Store
+*.log
+.vite
+
+# Local env (Supabase keys) — copy .env.example to .env.local
+.env
+.env.local
+.env.*.local
