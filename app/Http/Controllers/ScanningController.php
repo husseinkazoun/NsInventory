@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\ScanningSession;
 use App\Models\PhotoScan;
 use App\Models\Product;
+use App\Models\MissingComponent;
 use App\Jobs\ProcessPhotoScan;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -144,6 +145,8 @@ class ScanningController extends Controller
                         'extracted_manufacturer' => $scan->extracted_manufacturer,
                         'detected_condition' => $scan->detected_condition,
                         'missing_components' => $scan->missing_components,
+                        'classification_results' => $scan->classification_results,
+                        'ocr_results' => $scan->ocr_results,
                         'error_message' => $scan->error_message,
                         'created_at' => $scan->created_at,
                         'processed_at' => $scan->processed_at
@@ -176,6 +179,24 @@ class ScanningController extends Controller
             'product_data.name' => 'required_if:create_products,true|string|max:255',
             'product_data.category_id' => 'required_if:create_products,true|exists:categories,id',
             'product_data.unit_id' => 'required_if:create_products,true|exists:units,id',
+            'product_data.inventory_mode' => 'nullable|in:clothing',
+            'product_data.garment_type' => 'nullable|string|max:100',
+            'product_data.department' => 'nullable|in:women,men,unisex,kids',
+            'product_data.brand' => 'nullable|string|max:100',
+            'product_data.size_label' => 'nullable|string|max:50',
+            'product_data.color' => 'nullable|string|max:100',
+            'product_data.pattern' => 'nullable|string|max:100',
+            'product_data.material' => 'nullable|string|max:255',
+            'product_data.style_details' => 'nullable|array',
+            'product_data.visible_flaws' => 'nullable|array',
+            'product_data.condition_status' => 'nullable|in:excellent,good,fair,poor,broken',
+            'product_data.condition_notes' => 'nullable|string|max:1000',
+            'product_data.storage_location' => 'nullable|string|max:100',
+            'product_data.inventory_status' => 'nullable|in:to_process,ready,listed,reserved,sold,donated',
+            'product_data.measurements' => 'nullable|array',
+            'product_data.measurements.*' => 'nullable|numeric|min:0|max:500',
+            'product_data.buying_price' => 'nullable|numeric|min:0',
+            'product_data.selling_price' => 'nullable|numeric|min:0',
         ]);
 
         try {
@@ -272,6 +293,11 @@ class ScanningController extends Controller
     private function createProductsFromSession(ScanningSession $session, array $productData)
     {
         $completedScans = $session->photoScans()->completed()->get();
+
+        if ($this->isClothingSession($session)) {
+            $this->createClothingProductFromSession($session, $completedScans, $productData);
+            return;
+        }
         
         // Group scans by extracted information to identify unique products
         $productGroups = $this->groupScansByProduct($completedScans);
@@ -279,6 +305,92 @@ class ScanningController extends Controller
         foreach ($productGroups as $group) {
             $this->createProductFromScans($session, $group, $productData);
         }
+    }
+
+    private function isClothingSession(ScanningSession $session): bool
+    {
+        return ($session->device_info['inventory_mode'] ?? null) === 'clothing';
+    }
+
+    private function createClothingProductFromSession(ScanningSession $session, $scans, array $productData): void
+    {
+        $code = $this->generateNextClothingCode();
+        $condition = $productData['condition_status'] ?? 'good';
+        $storageLocation = $productData['storage_location'] ?? null;
+        $measurements = collect($productData['measurements'] ?? [])
+            ->filter(fn ($value) => $value !== null && $value !== '')
+            ->all();
+
+        $specifications = [
+            'inventory_mode' => 'clothing',
+            'garment_type' => $productData['garment_type'] ?? null,
+            'department' => $productData['department'] ?? null,
+            'brand' => $productData['brand'] ?? null,
+            'size_label' => $productData['size_label'] ?? null,
+            'color' => $productData['color'] ?? null,
+            'pattern' => $productData['pattern'] ?? null,
+            'material' => $productData['material'] ?? null,
+            'style_details' => $productData['style_details'] ?? [],
+            'visible_flaws' => $productData['visible_flaws'] ?? [],
+            'condition_notes' => $productData['condition_notes'] ?? null,
+            'inventory_status' => $productData['inventory_status'] ?? 'to_process',
+            'storage_location' => $storageLocation,
+            'measurements_cm' => $measurements,
+        ];
+
+        $product = Product::create([
+            'name' => $productData['name'],
+            'slug' => Str::slug($productData['name'] . '-' . $code),
+            'code' => $code,
+            'product_type' => 'regular',
+            'model' => $productData['garment_type'] ?? null,
+            'manufacturer' => $productData['brand'] ?? null,
+            'quantity' => 1,
+            'quantity_alert' => 0,
+            'buying_price' => $productData['buying_price'] ?? 0,
+            'selling_price' => $productData['selling_price'] ?? 0,
+            'tax' => 0,
+            'tax_type' => 0,
+            'notes' => $productData['condition_notes'] ?? null,
+            'specifications' => $specifications,
+            'category_id' => $productData['category_id'],
+            'unit_id' => $productData['unit_id'],
+            'location' => $storageLocation,
+            'condition_status' => $condition,
+            'asset_status' => 'active',
+            'scan_confidence' => $scans->avg('confidence_score'),
+            'last_scanned' => now(),
+            'scan_data' => $this->compileScanData($scans->all()),
+        ]);
+
+        $overviewScan = $scans->firstWhere('photo_type', 'overview') ?: $scans->first();
+        if ($overviewScan && Storage::disk('public')->exists($overviewScan->photo_path)) {
+            $extension = pathinfo($overviewScan->photo_path, PATHINFO_EXTENSION) ?: 'jpg';
+            $filename = Str::lower($code) . '-front.' . $extension;
+            Storage::disk('public')->copy($overviewScan->photo_path, 'products/' . $filename);
+            $product->update(['product_image' => $filename]);
+        }
+
+        foreach ($scans as $scan) {
+            $scan->update(['product_id' => $product->id]);
+        }
+
+        $session->incrementProductsCreated();
+    }
+
+    private function generateNextClothingCode(): string
+    {
+        $highestNumber = Product::where('code', 'like', 'SH-%')
+            ->pluck('code')
+            ->map(fn ($code) => (int) preg_replace('/\D/', '', $code))
+            ->max() ?? 0;
+
+        do {
+            $highestNumber++;
+            $code = 'SH-' . str_pad((string) $highestNumber, 4, '0', STR_PAD_LEFT);
+        } while (Product::where('code', $code)->exists());
+
+        return $code;
     }
 
     private function groupScansByProduct($scans)
@@ -318,14 +430,14 @@ class ScanningController extends Controller
         $bestCondition = $this->getBestExtractedValue($scans, 'detected_condition');
         
         // Generate product name
-        $name = $this->generateProductName($bestManufacturer, $bestModel, $bestSerial);
+        $name = $productData['name'] ?? $this->generateProductName($bestManufacturer, $bestModel, $bestSerial);
         
         // Create product
         $product = Product::create([
             'name' => $name,
             'slug' => Str::slug($name . '-' . time()),
             'code' => $this->generateUniqueCode($session->session_type),
-            'product_type' => $session->session_type,
+            'product_type' => $session->session_type === 'lab_asset' ? 'lab_asset' : 'regular',
             'serial_number' => $bestSerial,
             'model' => $bestModel,
             'manufacturer' => $bestManufacturer,
@@ -333,8 +445,8 @@ class ScanningController extends Controller
             'asset_status' => 'active',
             'quantity' => 1,
             'quantity_alert' => 1,
-            'buying_price' => 0,
-            'selling_price' => 0,
+            'buying_price' => $productData['buying_price'] ?? 0,
+            'selling_price' => $productData['selling_price'] ?? 0,
             'category_id' => $productData['category_id'],
             'unit_id' => $productData['unit_id'],
             'scan_confidence' => collect($scans)->avg('confidence_score'),
@@ -436,4 +548,3 @@ class ScanningController extends Controller
         }
     }
 }
-

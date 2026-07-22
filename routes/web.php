@@ -9,6 +9,7 @@ use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\LabAssetController;
 use App\Http\Controllers\ScanningController;
+use App\Http\Controllers\ClothingInventoryController;
 use App\Http\Controllers\Order\OrderController;
 use App\Http\Controllers\Order\DueOrderController;
 use App\Http\Controllers\Product\ProductController;
@@ -32,7 +33,9 @@ use App\Http\Controllers\Product\ProductImportController;;
 */
 
 Route::get('/', function () {
-    return redirect()->route('dashboard');
+    return auth()->check()
+        ? redirect()->route('clothing.index')
+        : redirect()->route('login');
 });
 
 Route::middleware(['auth'])->group(function () {
@@ -59,6 +62,13 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/products/import', [ProductImportController::class, 'store'])->name('products.import.store');
     Route::get('/products/export', [ProductExportController::class, 'create'])->name('products.export.store');
     Route::resource('/products', ProductController::class);
+
+    // Second-hand clothing inventory pilot
+    Route::prefix('clothing')->name('clothing.')->group(function () {
+        Route::get('/', [ClothingInventoryController::class, 'index'])->name('index');
+        Route::get('/scan', [ClothingInventoryController::class, 'scan'])->name('scan');
+        Route::get('/export', [ClothingInventoryController::class, 'export'])->name('export');
+    });
 
     // Route Orders
     Route::get('/orders', [OrderController::class, 'index'])->name('orders.index');

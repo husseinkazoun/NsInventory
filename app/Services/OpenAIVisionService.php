@@ -33,7 +33,13 @@ class OpenAIVisionService
         }
 
         $imageData = base64_encode(file_get_contents($imagePath));
-        $prompt = $this->getPromptForPhotoType($photoScan->photo_type, $photoScan->scanningSession->session_type);
+        $session = $photoScan->scanningSession;
+        $inventoryMode = $session->device_info['inventory_mode'] ?? null;
+        $prompt = $this->getPromptForPhotoType(
+            $photoScan->photo_type,
+            $session->session_type,
+            $inventoryMode
+        );
 
         $response = Http::withHeaders([
             'Authorization' => 'Bearer ' . $this->apiKey,
@@ -73,8 +79,12 @@ class OpenAIVisionService
         return $this->parseResponse($content, $photoScan->photo_type);
     }
 
-    private function getPromptForPhotoType(string $photoType, string $sessionType): string
+    private function getPromptForPhotoType(string $photoType, string $sessionType, ?string $inventoryMode = null): string
     {
+        if ($inventoryMode === 'clothing') {
+            return $this->getClothingPrompt($photoType);
+        }
+
         $basePrompts = [
             'lab_asset' => [
                 'overview' => 'Analyze this computer/lab equipment photo. Extract device information and return ONLY a JSON object with these exact fields: {"device_type": "string", "manufacturer": "string", "model": "string", "condition": "excellent|good|fair|poor|broken", "confidence": 0.0-1.0, "visible_components": ["array"], "missing_components": [{"component_type": "string", "component_name": "string", "required": true/false}]}',
@@ -99,6 +109,39 @@ class OpenAIVisionService
         return $basePrompts[$sessionType][$photoType] ?? 'Analyze this image and return relevant information as JSON.';
     }
 
+    private function getClothingPrompt(string $photoType): string
+    {
+        $sharedRules = ' This is a second-hand clothing inventory intake. Return ONLY valid JSON. '
+            . 'Use null when a value is not clearly visible. Never invent a brand, size, material, flaw, or authenticity claim. '
+            . 'Condition is only a visual suggestion and must be one of excellent, good, fair, poor, or broken.';
+
+        $prompts = [
+            'overview' => 'Analyze the FRONT view of this garment. Return: '
+                . '{"garment_type":null,"category":null,"department":"women|men|unisex|kids|null",'
+                . '"color":null,"pattern":null,"style_details":[],"suggested_title":null,'
+                . '"condition":"excellent|good|fair|poor|broken|null","visible_flaws":[],"confidence":0.0}.',
+
+            // The existing components photo type is reused as the back view for clothing sessions.
+            'components' => 'Analyze the BACK view of this garment. Return: '
+                . '{"garment_type":null,"category":null,"color":null,"pattern":null,'
+                . '"style_details":[],"condition":"excellent|good|fair|poor|broken|null",'
+                . '"visible_flaws":[],"confidence":0.0}.',
+
+            'serial_label' => 'Read the brand, size, material, origin, and care labels exactly as visible. Return: '
+                . '{"brand":null,"size_label":null,"material":null,"material_details":[],'
+                . '"country_of_origin":null,"care_instructions":[],"label_text":[],"confidence":0.0}. '
+                . 'Do not infer material or brand from the garment appearance.',
+
+            'condition' => 'Inspect this close-up detail or flaw photo. Return: '
+                . '{"condition":"excellent|good|fair|poor|broken|null","condition_notes":null,'
+                . '"visible_flaws":[],"wear_level":"none|light|moderate|heavy|null",'
+                . '"style_details":[],"confidence":0.0}.',
+        ];
+
+        return ($prompts[$photoType] ?? 'Analyze this clothing inventory photo and return relevant fields as JSON.')
+            . $sharedRules;
+    }
+
     private function parseResponse(string $response, string $photoType): array
     {
         // Clean the response to extract JSON
@@ -121,14 +164,33 @@ class OpenAIVisionService
             $data = $this->extractBasicInfo($response, $photoType);
         }
 
-        // Ensure we have the required structure
+        // Keep the complete structured clothing result in classification_results so
+        // the review screen can merge suggestions from all four photos.
+        $classification = [
+            'device_type' => $data['device_type'] ?? $data['product_type'] ?? null,
+            'category' => $data['category'] ?? null,
+            'garment_type' => $data['garment_type'] ?? null,
+            'department' => $data['department'] ?? null,
+            'brand' => $data['brand'] ?? $data['manufacturer'] ?? null,
+            'size_label' => $data['size_label'] ?? null,
+            'color' => $data['color'] ?? null,
+            'pattern' => $data['pattern'] ?? null,
+            'material' => $data['material'] ?? null,
+            'material_details' => $data['material_details'] ?? [],
+            'country_of_origin' => $data['country_of_origin'] ?? null,
+            'care_instructions' => $data['care_instructions'] ?? [],
+            'style_details' => $data['style_details'] ?? [],
+            'suggested_title' => $data['suggested_title'] ?? null,
+            'condition_notes' => $data['condition_notes'] ?? null,
+            'visible_flaws' => $data['visible_flaws'] ?? [],
+            'wear_level' => $data['wear_level'] ?? null,
+        ];
+
+        // Ensure we have the required structure.
         return [
-            'ocr_results' => $data['other_text'] ?? $data['text_extracted'] ?? [],
-            'object_detection' => $data['visible_components'] ?? $data['objects_detected'] ?? [],
-            'classification_results' => [
-                'device_type' => $data['device_type'] ?? $data['product_type'] ?? null,
-                'category' => $data['category'] ?? null
-            ],
+            'ocr_results' => ['text' => $data['label_text'] ?? $data['other_text'] ?? $data['text_extracted'] ?? []],
+            'object_detection' => ['objects' => $data['visible_components'] ?? $data['objects_detected'] ?? $data['style_details'] ?? []],
+            'classification_results' => $classification,
             'confidence_score' => $data['confidence'] ?? 0.5,
             'extracted_serial' => $data['serial_number'] ?? null,
             'extracted_model' => $data['model'] ?? null,
@@ -168,4 +230,3 @@ class OpenAIVisionService
         return $data;
     }
 }
-
