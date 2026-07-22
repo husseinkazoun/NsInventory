@@ -1,0 +1,53 @@
+name: VM deployment preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_USER: ${{ secrets.VM_USER }}
+        run: |
+          test -n "$VM_HOST"
+          test -n "$VM_USER"
+          test -n "$VM_SSH_KEY"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VM_SSH_KEY" > "$HOME/.ssh/nsinventory_deploy"
+          chmod 600 "$HOME/.ssh/nsinventory_deploy"
+          ssh-keyscan -H "$VM_HOST" >> "$HOME/.ssh/known_hosts"
+
+      - name: Inspect deployment prerequisites
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+        run: |
+          ssh -i "$HOME/.ssh/nsinventory_deploy" \
+            -o BatchMode=yes \
+            "$VM_USER@$VM_HOST" '
+              set -eu
+              echo "OS: $(uname -srm)"
+              echo "Docker: $(command -v docker || echo missing)"
+              if command -v docker >/dev/null 2>&1; then
+                docker --version
+                docker compose version || true
+              fi
+              echo "Git: $(command -v git || echo missing)"
+              echo "Curl: $(command -v curl || echo missing)"
+              echo "Port listeners:"
+              if command -v ss >/dev/null 2>&1; then
+                ss -ltn | awk "NR == 1 || /:80 |:443 |:8000 /"
+              elif command -v netstat >/dev/null 2>&1; then
+                netstat -ltn | awk "NR <= 2 || /:80 |:443 |:8000 /"
+              fi
+              echo "Disk:"
+              df -h "$HOME"
+            '
