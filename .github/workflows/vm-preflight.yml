@@ -36,6 +36,13 @@ jobs:
           printf 'VM_TARGET=%s\n' "$vm_target" >> "$GITHUB_ENV"
           printf 'VM_PORT=%s\n' "$vm_port" >> "$GITHUB_ENV"
           getent hosts "$vm_target"
+          for port in "$vm_port" 80 443 8000; do
+            if nc -vz -w 5 "$vm_target" "$port"; then
+              echo "Port $port: open"
+            else
+              echo "Port $port: closed or filtered"
+            fi
+          done
           nc -vz -w 10 "$vm_target" "$vm_port"
           ssh-keyscan -T 15 -p "$vm_port" -H "$vm_target" >> "$HOME/.ssh/known_hosts"
 
