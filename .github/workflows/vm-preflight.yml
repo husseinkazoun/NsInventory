@@ -23,16 +23,29 @@ jobs:
           install -m 700 -d "$HOME/.ssh"
           printf '%s\n' "$VM_SSH_KEY" > "$HOME/.ssh/nsinventory_deploy"
           chmod 600 "$HOME/.ssh/nsinventory_deploy"
-          ssh-keyscan -H "$VM_HOST" >> "$HOME/.ssh/known_hosts"
+
+          vm_target="${VM_HOST#http://}"
+          vm_target="${vm_target#https://}"
+          vm_target="${vm_target%%/*}"
+          vm_port="22"
+          if [[ "$vm_target" == *:* ]]; then
+            vm_port="${vm_target##*:}"
+            vm_target="${vm_target%%:*}"
+          fi
+
+          printf 'VM_TARGET=%s\n' "$vm_target" >> "$GITHUB_ENV"
+          printf 'VM_PORT=%s\n' "$vm_port" >> "$GITHUB_ENV"
+          getent hosts "$vm_target"
+          nc -vz -w 10 "$vm_target" "$vm_port"
+          ssh-keyscan -T 15 -p "$vm_port" -H "$vm_target" >> "$HOME/.ssh/known_hosts"
 
       - name: Inspect deployment prerequisites
         env:
-          VM_HOST: ${{ secrets.VM_HOST }}
           VM_USER: ${{ secrets.VM_USER }}
         run: |
-          ssh -i "$HOME/.ssh/nsinventory_deploy" \
+          ssh -p "$VM_PORT" -i "$HOME/.ssh/nsinventory_deploy" \
             -o BatchMode=yes \
-            "$VM_USER@$VM_HOST" '
+            "$VM_USER@$VM_TARGET" '
               set -eu
               echo "OS: $(uname -srm)"
               echo "Docker: $(command -v docker || echo missing)"
