@@ -29,6 +29,7 @@ class ClothingInventoryTest extends TestCase
             ->get(route('clothing.scan'))
             ->assertOk()
             ->assertSee('Scan a garment')
+            ->assertSee('name="csrf-token"', false)
             ->assertSee('Review before saving');
     }
 

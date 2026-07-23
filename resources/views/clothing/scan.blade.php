@@ -613,7 +613,3 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 @endsection
-
-@push('styles')
-<meta name="csrf-token" content="{{ csrf_token() }}">
-@endpush
