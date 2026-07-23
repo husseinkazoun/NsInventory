@@ -64,6 +64,7 @@ jobs:
             printf 'FILESYSTEM_DISK=public\n'
             printf 'QUEUE_CONNECTION=sync\n'
             printf 'SESSION_DRIVER=file\n'
+            printf 'SESSION_SECURE_COOKIE=true\n'
             printf 'MAIL_MAILER=log\n'
             printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
             printf 'OPENAI_API_BASE=https://api.openai.com/v1\n'
