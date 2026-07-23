@@ -29,7 +29,10 @@ class LoginRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'email' => ['required', 'string', 'email', 'exists:users,email'],
+            // No "exists:users,email" rule: it makes the response differ for a
+            // known vs unknown address, which reveals whether an account exists.
+            // An unknown address must fail exactly like a wrong password does.
+            'email' => ['required', 'string', 'email'],
             'password' => ['required', 'string'],
         ];
     }
@@ -46,8 +49,12 @@ class LoginRequest extends FormRequest
         if (! Auth::attempt($this->only('email', 'password'), $this->boolean('remember'))) {
             RateLimiter::hit($this->throttleKey());
 
+            // Key the message on the "email" FIELD, not the submitted email
+            // value. Keying it on the value produced an error bag entry that no
+            // field (and no @error directive) matched, so the page redirected
+            // back showing nothing at all.
             throw ValidationException::withMessages([
-                $this->email => trans('auth.failed'),
+                'email' => trans('auth.failed'),
             ]);
         }
 

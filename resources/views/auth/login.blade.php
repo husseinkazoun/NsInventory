@@ -6,12 +6,26 @@
         <h2 class="h2 text-center mb-4">
             Login to your account
         </h2>
+
+        {{-- Form-level message: keeps failures understandable even if the
+             per-field rendering changes (or a message is keyed to a field that
+             is not displayed). Shows the same generic text for a wrong password
+             and an unknown address. --}}
+        @if ($errors->any())
+            <div class="alert alert-danger" role="alert" data-testid="login-error">
+                {{ $errors->first() }}
+            </div>
+        @endif
+
         <form action="{{ route('login') }}" method="POST" autocomplete="off">
             @csrf
 
             <x-input name="email" :value="old('email')" placeholder="your@email.com" required="true"/>
 
-            <x-input type="password" name="password" placeholder="Your password" required="true"/>
+            {{-- :value="null" so the password is never repopulated after a
+                 failed attempt (the component would otherwise default to
+                 old('password')). --}}
+            <x-input type="password" name="password" :value="null" placeholder="Your password" required="true"/>
 
             <div class="mb-2">
                 <label for="remember" class="form-check">
