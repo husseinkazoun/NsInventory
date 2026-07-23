@@ -158,6 +158,23 @@ class Product extends Model
         return $query->where('asset_status', $status);
     }
 
+    /**
+     * The exact phrase an administrator must type back to permanently delete
+     * this product from the Trash.
+     *
+     * This is the single source of truth for that phrase: the Trash view
+     * displays it and ProductTrashController validates against it, so the two
+     * can never disagree. products.code is nullable, and an empty required
+     * phrase could never be satisfied, so fall back to a stable id-based
+     * phrase that is always non-empty.
+     */
+    public function deletionConfirmationPhrase(): string
+    {
+        $code = trim((string) $this->code);
+
+        return $code !== '' ? $code : 'DELETE-'.$this->getKey();
+    }
+
     // Helper methods
     public function isLabAsset(): bool
     {

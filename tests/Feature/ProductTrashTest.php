@@ -256,6 +256,83 @@ class ProductTrashTest extends TestCase
         Storage::disk('public')->assertExists('scans/1/front.jpg');
     }
 
+    // -------------------------------- permanent deletion with no product code
+
+    public function test_a_product_without_a_code_falls_back_to_a_stable_phrase(): void
+    {
+        $product = $this->product(['code' => null]);
+
+        $this->assertSame('DELETE-'.$product->id, $product->deletionConfirmationPhrase());
+    }
+
+    public function test_the_trash_page_shows_the_fallback_phrase_for_a_null_code_product(): void
+    {
+        $product = $this->product(['code' => null]);
+        $product->delete();
+
+        $response = $this->actingAs($this->admin())->get(route('products.trash.index'));
+
+        $response->assertOk();
+        $response->assertSee('DELETE-'.$product->id);
+    }
+
+    public function test_null_code_product_rejects_a_wrong_phrase_and_keeps_files_and_scans(): void
+    {
+        Storage::fake('public');
+        Storage::disk('public')->put('products/nullcode.jpg', 'image-bytes');
+        Storage::disk('public')->put('scans/9/front.jpg', 'raw-scan-bytes');
+
+        $product = $this->product(['code' => null, 'product_image' => 'nullcode.jpg']);
+        $session = $this->scanningSession();
+        $scan = PhotoScan::create([
+            'scanning_session_id' => $session->id,
+            'product_id' => $product->id,
+            'photo_path' => 'scans/9/front.jpg',
+            'photo_type' => 'overview',
+        ]);
+        $product->delete();
+
+        $this->actingAs($this->admin())->delete(
+            route('products.trash.forceDelete', $product->id),
+            ['confirmation' => 'DELETE-wrong']
+        );
+
+        // Still trashed, nothing removed.
+        $this->assertSoftDeleted('products', ['id' => $product->id]);
+        $this->assertNotNull(Product::withTrashed()->find($product->id));
+        $this->assertDatabaseHas('photo_scans', ['id' => $scan->id, 'product_id' => $product->id]);
+        Storage::disk('public')->assertExists('products/nullcode.jpg');
+        Storage::disk('public')->assertExists('scans/9/front.jpg');
+    }
+
+    public function test_null_code_product_can_be_permanently_deleted_with_the_fallback_phrase(): void
+    {
+        Storage::fake('public');
+        Storage::disk('public')->put('products/nullcode.jpg', 'image-bytes');
+        Storage::disk('public')->put('scans/9/front.jpg', 'raw-scan-bytes');
+
+        $product = $this->product(['code' => null, 'product_image' => 'nullcode.jpg']);
+        $session = $this->scanningSession();
+        $scan = PhotoScan::create([
+            'scanning_session_id' => $session->id,
+            'product_id' => $product->id,
+            'photo_path' => 'scans/9/front.jpg',
+            'photo_type' => 'overview',
+        ]);
+        $product->delete();
+
+        $this->actingAs($this->admin())->delete(
+            route('products.trash.forceDelete', $product->id),
+            ['confirmation' => 'DELETE-'.$product->id]
+        );
+
+        // The product is gone, but no file and no scan row was removed.
+        $this->assertNull(Product::withTrashed()->find($product->id));
+        $this->assertDatabaseHas('photo_scans', ['id' => $scan->id]);
+        Storage::disk('public')->assertExists('products/nullcode.jpg');
+        Storage::disk('public')->assertExists('scans/9/front.jpg');
+    }
+
     // ------------------------------------------------------------ permissions
 
     public function test_non_admins_cannot_use_the_trash(): void

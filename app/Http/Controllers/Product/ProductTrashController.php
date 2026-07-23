@@ -43,8 +43,11 @@ class ProductTrashController extends Controller
     }
 
     /**
-     * Permanently delete a trashed product. Requires the product code to be
-     * typed back, so this can never be a single accidental click.
+     * Permanently delete a trashed product. Requires the product's confirmation
+     * phrase to be typed back, so this can never be a single accidental click.
+     * The phrase comes from Product::deletionConfirmationPhrase(), the same
+     * source the Trash view renders, and is never empty even when the product
+     * has no code.
      *
      * No files are removed: the product image and every raw scan photo stay on
      * disk, and the photo_scans rows survive (their product_id is set to null
@@ -58,11 +61,13 @@ class ProductTrashController extends Controller
             'confirmation' => ['required', 'string'],
         ]);
 
-        if ($request->input('confirmation') !== $product->code) {
+        $expected = $product->deletionConfirmationPhrase();
+
+        if ($request->input('confirmation') !== $expected) {
             return redirect()
                 ->route('products.trash.index')
                 ->withErrors([
-                    'confirmation' => 'Type the product code "'.$product->code.'" exactly to permanently delete it. Nothing was deleted.',
+                    'confirmation' => 'Type "'.$expected.'" exactly to permanently delete this product. Nothing was deleted.',
                 ]);
         }
 

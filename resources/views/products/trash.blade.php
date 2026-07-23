@@ -62,16 +62,18 @@
                                     </form>
                                 </td>
                                 <td>
+                                    @php($confirmationPhrase = $product->deletionConfirmationPhrase())
                                     <form action="{{ route('products.trash.forceDelete', $product->id) }}" method="POST"
-                                          onsubmit="return confirm('Permanently delete {{ $product->code }}? This cannot be undone.');">
+                                          onsubmit="return confirm('Permanently delete {{ $confirmationPhrase }}? This cannot be undone.');">
                                         @csrf
                                         @method('DELETE')
                                         <div class="input-group">
                                             <input type="text" name="confirmation" class="form-control form-control-sm"
-                                                   placeholder="Type {{ $product->code }}" autocomplete="off" required>
+                                                   placeholder="Type {{ $confirmationPhrase }}" autocomplete="off" required>
                                             <button type="submit" class="btn btn-danger btn-sm">Delete forever</button>
                                         </div>
                                     </form>
+                                    <small class="text-secondary">Type <code>{{ $confirmationPhrase }}</code> to confirm</small>
                                 </td>
                             </tr>
                         @empty
