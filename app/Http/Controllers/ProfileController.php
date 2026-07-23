@@ -81,6 +81,21 @@ class ProfileController extends Controller
 
         $user = $request->user();
 
+        /**
+         * Never remove the last administrator, even when they are deleting
+         * their own account: that would leave nobody able to manage users.
+         * Checked before logout and deletion, so a refused request changes
+         * nothing and the session stays intact.
+         */
+        if ($user->isAdmin() && User::where('is_admin', true)->count() <= 1) {
+            return redirect()
+                ->route('profile.edit')
+                ->withErrors(
+                    ['password' => 'You cannot delete the only administrator account.'],
+                    'userDeletion'
+                );
+        }
+
         Auth::logout();
 
         $user->delete();

@@ -12,16 +12,28 @@ use Tests\TestCase;
  * `required_with:password_confirmation` rule allowed a request with no password
  * to reach Hash::make(null) and write an empty password. The rule is now
  * `required|min:6|confirmed`.
+ *
+ * Resetting another account's password is administrators-only (phase 2), so the
+ * acting user here is an administrator. Authorisation itself is covered by
+ * AdminAuthorizationTest; these cases cover the validation rules.
  */
 class UserPasswordUpdateTest extends TestCase
 {
     use RefreshDatabase;
 
+    private function admin(): User
+    {
+        $admin = User::factory()->create();
+        $admin->forceFill(['is_admin' => true])->save();
+
+        return $admin->fresh();
+    }
+
     public function test_password_can_be_updated_with_matching_confirmation(): void
     {
         $user = User::factory()->create();
 
-        $response = $this->actingAs($user)->put(route('users.updatePassword', $user), [
+        $response = $this->actingAs($this->admin())->put(route('users.updatePassword', $user), [
             'password' => 'new-secret-password',
             'password_confirmation' => 'new-secret-password',
         ]);
@@ -35,7 +47,7 @@ class UserPasswordUpdateTest extends TestCase
         $user = User::factory()->create();
         $originalPassword = $user->password;
 
-        $response = $this->actingAs($user)->put(route('users.updatePassword', $user), [
+        $response = $this->actingAs($this->admin())->put(route('users.updatePassword', $user), [
             'password' => 'new-secret-password',
         ]);
 
@@ -48,7 +60,7 @@ class UserPasswordUpdateTest extends TestCase
         $user = User::factory()->create();
         $originalPassword = $user->password;
 
-        $response = $this->actingAs($user)->put(route('users.updatePassword', $user), []);
+        $response = $this->actingAs($this->admin())->put(route('users.updatePassword', $user), []);
 
         $response->assertSessionHasErrors('password');
         $this->assertSame($originalPassword, $user->fresh()->password);

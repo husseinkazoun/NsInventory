@@ -202,9 +202,13 @@
                         <div class="dropdown-menu">
                             <div class="dropdown-menu-columns">
                                 <div class="dropdown-menu-column">
-                                    <a class="dropdown-item" href="{{ route('users.index') }}">
-                                        {{ __('Users') }}
-                                    </a>
+                                    {{-- User management is administrators-only, so non-admins
+                                         are not shown an entry point they cannot use. --}}
+                                    @if (auth()->user()?->isAdmin())
+                                        <a class="dropdown-item" href="{{ route('users.index') }}">
+                                            {{ __('Users') }}
+                                        </a>
+                                    @endif
                                     <a class="dropdown-item" href="{{ route('categories.index') }}">
                                         {{ __('Categories') }}
                                     </a>

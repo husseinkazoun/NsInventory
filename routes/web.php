@@ -42,9 +42,17 @@ Route::middleware(['auth'])->group(function () {
 
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
-    // User Management
-    Route::resource('/users', UserController::class); //->except(['show']);
-    Route::put('/user/change-password/{username}', [UserController::class, 'updatePassword'])->name('users.updatePassword');
+    // User Management — administrators only.
+    //
+    // The "admin" middleware is nested inside the "auth" group on purpose: auth
+    // runs first, so a guest is redirected to the login page, while a signed-in
+    // non-administrator gets a 403. users.updatePassword resets *another*
+    // account's password and belongs here too; users change their own password
+    // through password.update (/profile/settings), which stays open to everyone.
+    Route::middleware('admin')->group(function () {
+        Route::resource('/users', UserController::class); //->except(['show']);
+        Route::put('/user/change-password/{username}', [UserController::class, 'updatePassword'])->name('users.updatePassword');
+    });
 
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::get('/profile/settings', [ProfileController::class, 'settings'])->name('profile.settings');

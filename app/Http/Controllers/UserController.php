@@ -121,6 +121,19 @@ class UserController extends Controller
     public function destroy(User $user)
     {
         /**
+         * Never remove the last administrator: that would leave nobody able to
+         * manage users. Checked before the photo is unlinked and before the
+         * delete, so a refused request changes nothing at all. Deleting a
+         * non-administrator, or an administrator while another one remains, is
+         * still allowed.
+         */
+        if ($user->isAdmin() && User::where('is_admin', true)->count() <= 1) {
+            return redirect()
+                ->route('users.index')
+                ->withErrors(['user' => 'You cannot delete the only administrator account.']);
+        }
+
+        /**
          * Delete photo if exists.
          */
         if($user->photo){
