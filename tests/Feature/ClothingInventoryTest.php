@@ -32,6 +32,8 @@ class ClothingInventoryTest extends TestCase
             ->assertSee('name="csrf-token"', false)
             ->assertSee('Detail or flaw (optional)')
             ->assertSee('Skip this optional photo')
+            ->assertSee('Choose from phone photos or files')
+            ->assertDontSee('capture="environment"', false)
             ->assertSee('postJsonWithXhr')
             ->assertSee('Review before saving');
     }

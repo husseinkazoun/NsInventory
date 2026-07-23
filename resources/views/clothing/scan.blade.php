@@ -72,8 +72,8 @@
                                         Take photo
                                     </button>
                                     <label class="btn btn-outline-secondary w-100">
-                                        Use phone camera or choose file
-                                        <input type="file" id="file-{{ $number }}" accept="image/*" capture="environment" hidden>
+                                        Choose from phone photos or files
+                                        <input type="file" id="file-{{ $number }}" accept="image/*" hidden>
                                     </label>
                                 </div>
                                 <div id="confirm-actions-{{ $number }}" style="display:none">
