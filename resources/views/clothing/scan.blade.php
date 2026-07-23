@@ -450,6 +450,63 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function postJsonWithXhr(url, payload, fallbackMessage) {
+        return new Promise((resolve, reject) => {
+            const request = new XMLHttpRequest();
+            request.open('POST', url, true);
+            request.withCredentials = true;
+            request.setRequestHeader('Content-Type', 'application/json');
+            request.setRequestHeader('Accept', 'application/json');
+            request.setRequestHeader('X-CSRF-TOKEN', document.querySelector('meta[name="csrf-token"]').content);
+
+            request.onload = () => {
+                let result;
+                try {
+                    result = JSON.parse(request.responseText);
+                } catch (error) {
+                    reject(new Error(fallbackMessage));
+                    return;
+                }
+
+                resolve({
+                    ok: request.status >= 200 && request.status < 300,
+                    status: request.status,
+                    result,
+                });
+            };
+            request.onerror = () => reject(new Error(fallbackMessage));
+            request.ontimeout = () => reject(new Error('The save request timed out. Please check your connection and try again.'));
+            request.timeout = 30000;
+            request.send(JSON.stringify(payload));
+        });
+    }
+
+    async function postJson(url, payload, fallbackMessage) {
+        let response;
+        try {
+            response = await fetch(url, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                },
+                body: JSON.stringify(payload),
+            });
+        } catch (error) {
+            // Some iOS browsers can reject a valid fetch request with a DOM pattern error.
+            // XMLHttpRequest uses a separate networking path and preserves the same session.
+            return postJsonWithXhr(url, payload, fallbackMessage);
+        }
+
+        return {
+            ok: response.ok,
+            status: response.status,
+            result: await readJsonResponse(response, fallbackMessage),
+        };
+    }
+
     async function startSession() {
         const response = await fetch('{{ route('api.scanning.start') }}', {
             method: 'POST',
@@ -645,23 +702,24 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         try {
-            const response = await fetch(`{{ url('/api/scanning/session') }}/${state.sessionId}/complete`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
-                },
-                body: JSON.stringify(payload),
-            });
-            const result = await readJsonResponse(response, 'The garment could not be saved. Please try again.');
-            if (!response.ok || !result.success) throw new Error(result.message || 'The garment could not be saved.');
-            window.location.href = '{{ route('clothing.index') }}';
+            const saveRequest = await postJson(
+                `/api/scanning/session/${state.sessionId}/complete`,
+                payload,
+                'The garment could not be saved. Please try again.'
+            );
+            if (!saveRequest.ok || !saveRequest.result.success) {
+                throw new Error(saveRequest.result.message || 'The garment could not be saved.');
+            }
         } catch (error) {
-            showError(error.message);
+            showError(`Save failed: ${error.message}`);
             saveButton.disabled = false;
             saveButton.textContent = 'Save garment';
+            return;
         }
+
+        // Keep navigation outside the save error handler so a browser navigation
+        // quirk can never make a successfully saved garment look like a failure.
+        window.location.replace('/clothing');
     });
 
     document.querySelectorAll('[data-capture]').forEach(button =>
