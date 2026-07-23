@@ -30,6 +30,8 @@ class ClothingInventoryTest extends TestCase
             ->assertOk()
             ->assertSee('Scan a garment')
             ->assertSee('name="csrf-token"', false)
+            ->assertSee('Detail or flaw (optional)')
+            ->assertSee('Skip this optional photo')
             ->assertSee('Review before saving');
     }
 

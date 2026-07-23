@@ -6,7 +6,7 @@
         1 => ['title' => 'Front', 'help' => 'Photograph the full front of the garment.', 'type' => 'overview'],
         2 => ['title' => 'Back', 'help' => 'Photograph the full back of the garment.', 'type' => 'components'],
         3 => ['title' => 'Labels', 'help' => 'Photograph the brand, size, material, and care labels.', 'type' => 'serial_label'],
-        4 => ['title' => 'Detail or flaw', 'help' => 'Photograph an important detail or the most visible flaw.', 'type' => 'condition'],
+        4 => ['title' => 'Detail or flaw (optional)', 'help' => 'Optional: photograph an important detail or visible flaw, or skip this step.', 'type' => 'condition'],
     ];
 @endphp
 
@@ -84,6 +84,11 @@
                                         Retake
                                     </button>
                                 </div>
+                                @if ($number === 4)
+                                    <button type="button" class="btn btn-link w-100 mt-2" data-skip="{{ $number }}">
+                                        Skip this optional photo
+                                    </button>
+                                @endif
                                 <div class="alert alert-info mt-3 mb-0">
                                     <strong>Photo tip:</strong>
                                     @if ($number <= 2)
@@ -284,6 +289,8 @@
 <script>
 document.addEventListener('DOMContentLoaded', () => {
     const photoSteps = @json($photoSteps);
+    const MAX_PHONE_PHOTO_EDGE = 2048;
+    const PHONE_PHOTO_QUALITY = 0.85;
     const state = {
         sessionId: null,
         currentStep: 1,
@@ -339,7 +346,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function previewPhoto(file, step) {
         clearError();
         if (!file || !file.type.startsWith('image/')) {
-            showError('Please choose a JPEG or PNG image.');
+            showError('Please choose a photo.');
             return;
         }
 
@@ -352,6 +359,50 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById(`capture-actions-${step}`).style.display = 'none';
         document.getElementById(`confirm-actions-${step}`).style.display = 'block';
         stopCamera();
+    }
+
+    function loadPhoto(file) {
+        return new Promise((resolve, reject) => {
+            const url = URL.createObjectURL(file);
+            const image = new Image();
+            image.onload = () => {
+                URL.revokeObjectURL(url);
+                resolve(image);
+            };
+            image.onerror = () => {
+                URL.revokeObjectURL(url);
+                reject(new Error('This phone photo could not be read. Try the in-app camera, or set your phone camera format to Most Compatible.'));
+            };
+            image.src = url;
+        });
+    }
+
+    async function preparePhonePhoto(file, step) {
+        clearError();
+        if (!file || !file.type.startsWith('image/')) {
+            showError('Please choose a photo.');
+            return;
+        }
+
+        try {
+            const image = await loadPhoto(file);
+            const scale = Math.min(1, MAX_PHONE_PHOTO_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+            canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+            canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+
+            const jpeg = await new Promise((resolve, reject) => {
+                canvas.toBlob(
+                    blob => blob ? resolve(blob) : reject(new Error('The phone photo could not be prepared. Please try again.')),
+                    'image/jpeg',
+                    PHONE_PHOTO_QUALITY
+                );
+            });
+            previewPhoto(jpeg, step);
+        } catch (error) {
+            showError(error.message);
+        }
     }
 
     function capturePhoto(step) {
@@ -380,11 +431,31 @@ document.addEventListener('DOMContentLoaded', () => {
         startCamera(step);
     }
 
+    function skipPhoto(step) {
+        if (step !== 4) return;
+        clearError();
+        delete state.localPhotos[step];
+        delete state.scanIds[step];
+        goToStep(step + 1);
+    }
+
+    async function readJsonResponse(response, fallbackMessage) {
+        try {
+            return await response.json();
+        } catch (error) {
+            if (response.status === 413) {
+                throw new Error('The photo is too large to upload. Please try again; the app will reduce the next photo automatically.');
+            }
+            throw new Error(fallbackMessage);
+        }
+    }
+
     async function startSession() {
         const response = await fetch('{{ route('api.scanning.start') }}', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                'Accept': 'application/json',
                 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
             },
             body: JSON.stringify({
@@ -392,7 +463,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 device_info: { inventory_mode: 'clothing', workflow_version: 1 },
             }),
         });
-        const result = await response.json();
+        const result = await readJsonResponse(response, 'Could not start the scan. Please refresh and try again.');
         if (!response.ok || !result.success) throw new Error(result.message || 'Could not start the scan.');
         state.sessionId = result.session_id;
     }
@@ -409,17 +480,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const form = new FormData();
         form.append('session_id', state.sessionId);
-        const extension = state.localPhotos[step].type === 'image/png' ? 'png' : 'jpg';
-        form.append('photo', state.localPhotos[step], `clothing-${step}.${extension}`);
+        form.append('photo', state.localPhotos[step], `clothing-${step}.jpg`);
         form.append('photo_type', photoSteps[step].type);
 
         try {
             const response = await fetch('{{ route('api.scanning.upload') }}', {
                 method: 'POST',
-                headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+                headers: {
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                },
                 body: form,
             });
-            const result = await response.json();
+            const result = await readJsonResponse(response, 'The photo upload failed. Please try again.');
             if (!response.ok || !result.success) throw new Error(result.message || 'Photo upload failed.');
             state.scanIds[step] = result.photo_scan_id;
             goToStep(step + 1);
@@ -453,7 +526,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const scans = result.session.photo_scans || [];
-            const allFinished = scans.length >= 4 && scans.every(scan => ['completed', 'failed'].includes(scan.processing_status));
+            const uploadedCount = Object.keys(state.scanIds).length;
+            const allFinished = scans.length >= uploadedCount && scans.every(scan => ['completed', 'failed'].includes(scan.processing_status));
             if (allFinished) {
                 fillReview(scans);
                 return;
@@ -575,11 +649,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    'Accept': 'application/json',
                     'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
                 },
                 body: JSON.stringify(payload),
             });
-            const result = await response.json();
+            const result = await readJsonResponse(response, 'The garment could not be saved. Please try again.');
             if (!response.ok || !result.success) throw new Error(result.message || 'The garment could not be saved.');
             window.location.href = '{{ route('clothing.index') }}';
         } catch (error) {
@@ -598,9 +673,13 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-retake]').forEach(button =>
         button.addEventListener('click', () => retake(Number(button.dataset.retake)))
     );
+    document.querySelectorAll('[data-skip]').forEach(button =>
+        button.addEventListener('click', () => skipPhoto(Number(button.dataset.skip)))
+    );
     for (let step = 1; step <= 4; step++) {
-        document.getElementById(`file-${step}`).addEventListener('change', event => {
-            if (event.target.files[0]) previewPhoto(event.target.files[0], step);
+        document.getElementById(`file-${step}`).addEventListener('change', async event => {
+            if (event.target.files[0]) await preparePhonePhoto(event.target.files[0], step);
+            event.target.value = '';
         });
     }
     document.getElementById('start-over').addEventListener('click', () => {
