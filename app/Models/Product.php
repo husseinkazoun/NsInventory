@@ -8,10 +8,15 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Product extends Model
 {
-    use HasFactory;
+    // SoftDeletes: deleting a product moves it to Trash (deleted_at) instead of
+    // removing the row, so it can be restored and its image and raw scan photos
+    // are never touched. Trashed products are excluded from every Eloquent query
+    // (and therefore from all product lists and the public API) by default.
+    use HasFactory, SoftDeletes;
 
     protected $guarded = ['id'];
 

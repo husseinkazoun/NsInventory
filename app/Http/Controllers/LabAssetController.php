@@ -188,15 +188,13 @@ class LabAssetController extends Controller
             abort(404);
         }
 
-        // Delete associated image
-        if ($labAsset->product_image) {
-            Storage::disk('public')->delete($labAsset->product_image);
-        }
-
+        // Move to Trash rather than deleting. The image and any raw scan photos
+        // are left untouched so the asset can be restored intact; permanent
+        // deletion is a separate, explicitly confirmed administrator action.
         $labAsset->delete();
 
         return redirect()->route('lab-assets.index')
-            ->with('success', 'Lab asset deleted successfully.');
+            ->with('success', 'Lab asset moved to Trash. An administrator can restore it from the Trash page.');
     }
 
     public function dashboard()

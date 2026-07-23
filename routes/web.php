@@ -19,7 +19,8 @@ use App\Http\Controllers\Order\OrderCompleteController;
 use App\Http\Controllers\Quotation\QuotationController;
 use App\Http\Controllers\Dashboards\DashboardController;
 use App\Http\Controllers\Product\ProductExportController;
-use App\Http\Controllers\Product\ProductImportController;;
+use App\Http\Controllers\Product\ProductImportController;
+use App\Http\Controllers\Product\ProductTrashController;
 
 /*
 |--------------------------------------------------------------------------
@@ -66,6 +67,16 @@ Route::middleware(['auth'])->group(function () {
     Route::resource('/units', UnitController::class);
 
     // Route Products
+    // Product Trash — administrators only. Registered BEFORE the products
+    // resource so "/products/trash" is not swallowed by "/products/{product}"
+    // (the model's route key is its slug). Trashed products are addressed by id
+    // because route-model binding applies the soft-delete scope.
+    Route::middleware('admin')->group(function () {
+        Route::get('/products/trash', [ProductTrashController::class, 'index'])->name('products.trash.index');
+        Route::put('/products/trash/{id}/restore', [ProductTrashController::class, 'restore'])->name('products.trash.restore');
+        Route::delete('/products/trash/{id}', [ProductTrashController::class, 'forceDelete'])->name('products.trash.forceDelete');
+    });
+
     Route::get('/products/import', [ProductImportController::class, 'create'])->name('products.import.view');
     Route::post('/products/import', [ProductImportController::class, 'store'])->name('products.import.store');
     Route::get('/products/export', [ProductExportController::class, 'create'])->name('products.export.store');

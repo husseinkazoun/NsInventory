@@ -149,16 +149,15 @@ class ProductController extends Controller
     public function destroy(Product $product)
     {
         /**
-         * Delete photo if exists.
+         * Move the product to Trash instead of deleting it. The image and the
+         * raw scan photos are deliberately left in place: a trashed product can
+         * be restored intact from the Trash page, and permanent deletion is a
+         * separate, explicitly confirmed administrator action.
          */
-        if ($product->product_image) {
-            \Storage::disk('public')->delete('products/' . $product->product_image);
-        }
-
         $product->delete();
 
         return redirect()
             ->route('products.index')
-            ->with('success', 'Product has been deleted!');
+            ->with('success', 'Product moved to Trash. An administrator can restore it from the Trash page.');
     }
 }
