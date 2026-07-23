@@ -26,6 +26,7 @@ services:
         condition: service_healthy
     volumes:
       - product_photos:/var/www/html/storage/app/public
+      - session_files:/var/www/html/storage/framework/sessions
     ports:
       - "8000:80"
 
@@ -48,5 +49,6 @@ services:
 volumes:
   mysql_data:
   product_photos:
+  session_files:
   caddy_data:
   caddy_config:
