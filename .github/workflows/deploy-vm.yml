@@ -118,10 +118,20 @@ jobs:
           ssh -i "$HOME/.ssh/nsinventory_deploy" "$VM_USER@$VM_HOST" "
             set -eu
             cd '$release'
-            # Validate the Caddyfile in a throwaway container BEFORE touching the
-            # running stack. A syntax error here aborts the deploy while the live
-            # proxy keeps running the previous release, so a bad config can never
-            # crash-loop the production web server (and its sslip.io fallback).
+            # Trust ONLY the actual Docker network subnet Laravel sees as the
+            # reverse-proxy source (Caddy), never '*'. Determined by inspecting
+            # the live network, so it is never guessed and self-corrects if the
+            # subnet ever changes. Falls back to the private Docker range only if
+            # inspection fails (logged).
+            subnet=\$(docker network inspect nsinventory_default --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null || true)
+            if [ -z \"\$subnet\" ]; then subnet=172.16.0.0/12; echo \"WARN: docker subnet not found; using \$subnet\"; fi
+            printf 'TRUSTED_PROXIES=%s\n' \"\$subnet\" >> .env
+            echo \"Configured TRUSTED_PROXIES=\$subnet\"
+            # Validate Compose + Caddy config BEFORE touching the running stack.
+            # A syntax error aborts the deploy while the live proxy keeps running
+            # the previous release, so a bad config can never crash-loop the
+            # production web server (and its sslip.io fallback).
+            docker compose --project-name nsinventory -f docker-compose.production.yml config -q
             docker run --rm -e PUBLIC_HOST='$public_host' \
               -v \"\$(pwd)/docker/Caddyfile:/etc/caddy/Caddyfile:ro\" \
               caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
@@ -153,6 +163,19 @@ jobs:
           done
           if [ -z "$origin_ok" ]; then
             echo "FATAL: VM origin did not serve the Laravel login page." >&2
+            exit 1
+          fi
+
+          # Scheme gate: if TRUSTED_PROXIES is wrong, Laravel stops trusting
+          # Caddy's X-Forwarded-Proto and treats the request as http, emitting
+          # http:// form actions -> the login POST would hit the http->https
+          # redirect and lose its body (silent login breakage). The content
+          # check above still passes in that case, so gate explicitly on scheme.
+          login_html="$(curl --fail --silent --show-error --location --max-time 20 "https://${origin_host}/login" 2>/dev/null || true)"
+          if printf '%s' "$login_html" | grep -q 'action="https://'; then
+            echo "Scheme OK: login form action is https on the origin"
+          else
+            echo "FATAL: login form action is not https (TRUSTED_PROXIES likely wrong); HTTPS URL generation regressed." >&2
             exit 1
           fi
 

@@ -28,7 +28,10 @@ services:
       - product_photos:/var/www/html/storage/app/public
       - session_files:/var/www/html/storage/framework/sessions
     ports:
-      - "8000:80"
+      # Loopback-only: Caddy reaches the app over the Docker network (app:80),
+      # so this host binding is not needed publicly. Binding to 127.0.0.1
+      # prevents external traffic from bypassing Caddy on port 8000.
+      - "127.0.0.1:8000:80"
 
   caddy:
     image: caddy:2-alpine
