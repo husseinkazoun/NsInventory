@@ -208,7 +208,7 @@
                                                             Edit
                                                         </a>
                                                         @if($asset->asset_status === 'active')
-                                                        <a class="dropdown-item" href="#" onclick="changeStatus('{{ $asset->id }}', 'maintenance')">
+                                                        <a class="dropdown-item" href="#" data-change-status="{{ $asset->id }}" data-status="maintenance">
                                                             <svg xmlns="http://www.w3.org/2000/svg" class="icon dropdown-item-icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
                                                                 <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
                                                                 <path d="M12 3c7.2 0 9 1.8 9 9s-1.8 9-9 9s-9-1.8-9-9s1.8-9 9-9z"/>
@@ -219,7 +219,10 @@
                                                         </a>
                                                         @endif
                                                         <div class="dropdown-divider"></div>
-                                                        <a class="dropdown-item text-danger" href="#" onclick="deleteAsset('{{ $asset->id }}', '{{ $asset->name }}')">
+                                                        {{-- id only, passed as a data attribute: the asset name was
+                                                             interpolated straight into JavaScript here and is
+                                                             import-controlled, and deleteAsset never used it. --}}
+                                                        <a class="dropdown-item text-danger" href="#" data-delete-asset="{{ $asset->id }}">
                                                             <svg xmlns="http://www.w3.org/2000/svg" class="icon dropdown-item-icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
                                                                 <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
                                                                 <line x1="4" y1="7" x2="20" y2="7"/>
@@ -311,10 +314,28 @@
 </div>
 
 <script>
-function deleteAsset(assetId, assetName) {
+// The asset id and status arrive from data attributes read via dataset, never
+// interpolated into this script, so import-controlled values such as an asset
+// name can never be executed as code.
+document.addEventListener('click', function (event) {
+    const deleteTrigger = event.target.closest('[data-delete-asset]');
+    if (deleteTrigger) {
+        event.preventDefault();
+        deleteAsset(deleteTrigger.dataset.deleteAsset);
+        return;
+    }
+
+    const statusTrigger = event.target.closest('[data-change-status]');
+    if (statusTrigger) {
+        event.preventDefault();
+        changeStatus(statusTrigger.dataset.changeStatus, statusTrigger.dataset.status);
+    }
+});
+
+function deleteAsset(assetId) {
     const modal = new bootstrap.Modal(document.getElementById('deleteModal'));
     const form = document.getElementById('deleteForm');
-    form.action = `/lab-assets/${assetId}`;
+    form.action = `/lab-assets/${encodeURIComponent(assetId)}`;
     modal.show();
 }
 

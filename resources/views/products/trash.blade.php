@@ -63,8 +63,14 @@
                                 </td>
                                 <td>
                                     @php($confirmationPhrase = $product->deletionConfirmationPhrase())
+                                    {{-- The confirmation phrase is passed as a data attribute and read
+                                         back with dataset in a listener below. It is never interpolated
+                                         into JavaScript source: a product code can arrive through a
+                                         spreadsheet import and could otherwise contain quotes that break
+                                         out of a string literal in an inline handler. --}}
                                     <form action="{{ route('products.trash.forceDelete', $product->id) }}" method="POST"
-                                          onsubmit="return confirm('Permanently delete {{ $confirmationPhrase }}? This cannot be undone.');">
+                                          data-confirm-delete
+                                          data-delete-label="{{ $confirmationPhrase }}">
                                         @csrf
                                         @method('DELETE')
                                         <div class="input-group">
@@ -88,3 +94,24 @@
     </div>
 </div>
 @endsection
+
+@push('page-scripts')
+<script>
+    // Confirm permanent deletion. The label is read from the form's data
+    // attribute as a plain string, so a product code containing quotes or
+    // script-like text can never be executed as code.
+    document.addEventListener('submit', function (event) {
+        var form = event.target.closest('form[data-confirm-delete]');
+
+        if (!form) {
+            return;
+        }
+
+        var label = form.dataset.deleteLabel || 'this product';
+
+        if (!window.confirm('Permanently delete ' + label + '? This cannot be undone.')) {
+            event.preventDefault();
+        }
+    });
+</script>
+@endpush
