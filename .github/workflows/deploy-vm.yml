@@ -76,6 +76,27 @@ jobs:
             printf 'PUBLIC_HOST=%s\n' "$public_host"
           } > "$RUNNER_TEMP/nsinventory.env"
 
+      - name: Reclaim deployment space
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+        run: |
+          ssh -i "$HOME/.ssh/nsinventory_deploy" "$VM_USER@$VM_HOST" '
+            set -eu
+            docker container prune --force
+            docker image prune --all --force
+            docker builder prune --all --force --keep-storage 1GB
+
+            current_release="$(readlink -f apps/nsinventory/current 2>/dev/null || true)"
+            for candidate in apps/nsinventory/releases/*; do
+              [ -d "$candidate" ] || continue
+              candidate_path="$(readlink -f "$candidate")"
+              if [ "$candidate_path" != "$current_release" ]; then
+                rm -rf -- "$candidate"
+              fi
+            done
+          '
+
       - name: Upload release
         env:
           VM_HOST: ${{ secrets.VM_HOST }}
