@@ -27,10 +27,31 @@ class UserController extends Controller
 
     public function store(StoreUserRequest $request)
     {
-        $user = User::create($request->all());
+        $validated = $request->validated();
 
         /**
-         * Handle upload an image
+         * Build the attributes explicitly from validated input.
+         *
+         * The previous User::create($request->all()) mass-assigned whatever was
+         * posted: it stored the password as PLAINTEXT (the model has no hashed
+         * cast and no mutator, so the account could never authenticate), pushed
+         * the uploaded file object into the fillable photo column, and handed
+         * any unexpected field straight to the model. Listing the four columns
+         * explicitly means password_confirmation, photo, is_admin and anything
+         * else simply cannot reach it.
+         *
+         * is_admin is deliberately absent: new accounts are never
+         * administrators, and the flag is granted deliberately out of band.
+         */
+        $user = User::create([
+            'name' => $validated['name'],
+            'username' => $validated['username'],
+            'email' => $validated['email'],
+            'password' => Hash::make($validated['password']),
+        ]);
+
+        /**
+         * Handle upload an image (optional).
          */
         if($request->hasFile('photo')){
             $file = $request->file('photo');
