@@ -101,9 +101,11 @@ class UserController extends Controller
     public function updatePassword(Request $request, String $username)
     {
         # Validation
+        # `required|confirmed` prevents a missing/empty password from being hashed
+        # (the previous `required_with` rule allowed Hash::make(null) to write an
+        # empty password when no confirmation field was submitted).
         $validated = $request->validate([
-            'password' => 'required_with:password_confirmation|min:6',
-            'password_confirmation' => 'same:password|min:6',
+            'password' => 'required|min:6|confirmed',
         ]);
 
         # Update the new Password
