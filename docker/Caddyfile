@@ -1,4 +1,17 @@
+# Primary domain: serve the Laravel app.
+sanadinventory.com {
+	encode zstd gzip
+	reverse_proxy app:80
+}
+
+# www -> apex, permanent (301) redirect, preserving the request path/query.
+www.sanadinventory.com {
+	redir https://sanadinventory.com{uri} permanent
+}
+
+# VM-origin fallback hostname (35-225-78-186.sslip.io). Kept operational so the
+# app stays reachable directly on the VM during and after the domain migration.
 {$PUBLIC_HOST} {
-    encode zstd gzip
-    reverse_proxy app:80
+	encode zstd gzip
+	reverse_proxy app:80
 }

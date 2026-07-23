@@ -49,7 +49,7 @@ jobs:
             printf 'APP_ENV=production\n'
             printf 'APP_KEY=%s\n' "$APP_KEY"
             printf 'APP_DEBUG=false\n'
-            printf 'APP_URL=https://%s\n' "$public_host"
+            printf 'APP_URL=https://sanadinventory.com\n'
             printf 'LOG_CHANNEL=stderr\n'
             printf 'LOG_LEVEL=warning\n'
             printf 'DB_CONNECTION=mysql\n'
@@ -114,9 +114,17 @@ jobs:
           VM_USER: ${{ secrets.VM_USER }}
         run: |
           release="apps/nsinventory/releases/${GITHUB_SHA}"
+          public_host="${VM_HOST//./-}.sslip.io"
           ssh -i "$HOME/.ssh/nsinventory_deploy" "$VM_USER@$VM_HOST" "
             set -eu
             cd '$release'
+            # Validate the Caddyfile in a throwaway container BEFORE touching the
+            # running stack. A syntax error here aborts the deploy while the live
+            # proxy keeps running the previous release, so a bad config can never
+            # crash-loop the production web server (and its sslip.io fallback).
+            docker run --rm -e PUBLIC_HOST='$public_host' \
+              -v \"\$(pwd)/docker/Caddyfile:/etc/caddy/Caddyfile:ro\" \
+              caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
             docker compose --project-name nsinventory -f docker-compose.production.yml up -d --build --remove-orphans
             cd ../..
             ln -sfn 'releases/${GITHUB_SHA}' current
@@ -126,12 +134,34 @@ jobs:
         env:
           VM_HOST: ${{ secrets.VM_HOST }}
         run: |
-          public_host="${VM_HOST//./-}.sslip.io"
+          origin_host="${VM_HOST//./-}.sslip.io"
+          primary_host="sanadinventory.com"
+          # Content marker, not just a 200: the old Cloudflare SPA returns 200 on
+          # every path, so a status-code check would false-pass against it.
+          laravel_marker="Sanad Clothing Inventory"
+
+          # Mandatory gate: the VM origin must serve the Laravel app.
+          origin_ok=""
           for attempt in $(seq 1 30); do
-            if curl --fail --silent --show-error --location "https://${public_host}/login" >/dev/null; then
-              echo "Deployment is live at https://${public_host}/clothing"
-              exit 0
+            body="$(curl --fail --silent --show-error --location "https://${origin_host}/login" 2>/dev/null || true)"
+            if printf '%s' "$body" | grep -q "$laravel_marker"; then
+              echo "Origin OK: Laravel login served at https://${origin_host}/login"
+              origin_ok=1
+              break
             fi
             sleep 5
           done
-          exit 1
+          if [ -z "$origin_ok" ]; then
+            echo "FATAL: VM origin did not serve the Laravel login page." >&2
+            exit 1
+          fi
+
+          # Primary domain: verified once DNS is cut over to the VM. Non-fatal
+          # before cutover so pre-cutover deploys still pass while the domain
+          # still points at the old frontend.
+          primary_body="$(curl --fail --silent --show-error --location --max-time 20 "https://${primary_host}/login" 2>/dev/null || true)"
+          if printf '%s' "$primary_body" | grep -q "$laravel_marker"; then
+            echo "Primary OK: Laravel login served at https://${primary_host}/login"
+          else
+            echo "NOTE: https://${primary_host}/login is not yet serving Laravel (expected before DNS cutover); VM-origin fallback verified."
+          fi
