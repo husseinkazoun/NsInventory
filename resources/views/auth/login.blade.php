@@ -30,11 +30,13 @@
 </div>
 
 <div class="text-center mt-3 text-gray-600">
-    <p>Don't have an account yet?
-        <a href="{{ route('register') }}" class="text-blue-500 hover:text-blue-700 focus:outline-none focus:underline" tabindex="-1">
-            Sign up
-        </a>
-    </p>
+    @if (Route::has('register'))
+        <p>Don't have an account yet?
+            <a href="{{ route('register') }}" class="text-blue-500 hover:text-blue-700 focus:outline-none focus:underline" tabindex="-1">
+                Sign up
+            </a>
+        </p>
+    @endif
 
     <p class="mt-2">
         <a href="{{ route('password.request') }}" class="text-sm text-gray-500 hover:text-gray-700 focus:outline-none focus:underline">

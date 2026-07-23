@@ -15,11 +15,12 @@ class RouteTest extends TestCase
         $response->assertOk();
     }
 
-    public function test_register_route(): void
+    public function test_register_route_is_disabled(): void
     {
-        $response = $this->get(route('register'));
+        // Public self-registration is disabled (see routes/auth.php).
+        $response = $this->get('/register');
 
-        $response->assertOk();
+        $response->assertNotFound();
     }
 
     public function test_dashboard_route_redirect_unauthorized_user_to_login_page(): void
