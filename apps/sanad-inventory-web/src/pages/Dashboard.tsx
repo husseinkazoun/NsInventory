@@ -10,6 +10,7 @@ import {
   FileText,
 } from 'lucide-react'
 import { PageHeader } from '../components/ui/PageHeader'
+import { useCapabilities } from '../lib/permissions'
 import { SectionTitle } from '../components/ui/SectionTitle'
 import { StatCard } from '../components/ui/StatCard'
 import { QuickActionTile } from '../components/ui/QuickActionTile'
@@ -18,15 +19,20 @@ import { kpis } from '../lib/mockData'
 import { formatNumber as fmt } from '../lib/format'
 
 export default function Dashboard() {
+  // UX only — RLS refuses these writes regardless of what is rendered.
+  const { canWrite } = useCapabilities()
+
   return (
     <>
       <PageHeader
         pretitle="Operations · Overview"
         title="Dashboard"
         actions={
-          <Button to="/lab-assets/new" Icon={Plus}>
-            Add Lab Asset
-          </Button>
+          canWrite ? (
+            <Button to="/lab-assets/new" Icon={Plus}>
+              Add Lab Asset
+            </Button>
+          ) : null
         }
       />
 
@@ -100,24 +106,28 @@ export default function Dashboard() {
 
       <SectionTitle>Quick Actions</SectionTitle>
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
-        <QuickActionTile
-          to="/scan/start"
-          Icon={Camera}
-          title="Start Photo Scan"
-          description="Intake or inspect a lab asset by photo"
-        />
+        {canWrite && (
+          <QuickActionTile
+            to="/scan/start"
+            Icon={Camera}
+            title="Start Photo Scan"
+            description="Intake or inspect a lab asset by photo"
+          />
+        )}
         <QuickActionTile
           to="/purchases"
           Icon={PackageOpen}
           title="New Purchase"
           description="Record a procurement order"
         />
-        <QuickActionTile
-          to="/lab-assets/new"
-          Icon={Plus}
-          title="Add Lab Asset"
-          description="Register equipment or instruments"
-        />
+        {canWrite && (
+          <QuickActionTile
+            to="/lab-assets/new"
+            Icon={Plus}
+            title="Add Lab Asset"
+            description="Register equipment or instruments"
+          />
+        )}
       </div>
     </>
   )

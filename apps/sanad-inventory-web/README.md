@@ -112,6 +112,39 @@ Other pages still render `error.message` from failed queries directly. For an ex
 
 ---
 
+## Authorization (role-based RLS)
+
+`supabase/migrations/20260725161641_role_based_rls.sql` makes the database enforce the role matrix. Before it, every policy was a bare `is_org_member(organization_id)` — membership alone granted read, write *and* delete, so a `viewer` had exactly an `owner`'s rights and `org_role` was decorative.
+
+| Role | Read org data | Create / update | Delete |
+|---|:--:|:--:|:--:|
+| `owner`  | ✅ | ✅ | ✅ |
+| `admin`  | ✅ | ✅ | ✅ |
+| `member` | ✅ | ✅ | ❌ |
+| `viewer` | ✅ | ❌ | ❌ |
+
+Also enforced: `anon` gets nothing; no role reaches another organization; `activity_log` is append-only (no UPDATE/DELETE policy *or* privilege for anyone); organizations, profiles and memberships are read-only from the Data API.
+
+**Helpers.** `public.is_org_member()` was `SECURITY DEFINER` in an exposed schema, so `anon` could call it at `/rest/v1/rpc`. It is dropped and replaced by four helpers in the unexposed `private` schema — `readable_org_ids()`, `writable_org_ids()`, `deletable_org_ids()`, `visible_profile_ids()` — each `security definer`, `set search_path = ''`, `EXECUTE` revoked from `PUBLIC`/`anon` and granted only to `authenticated`.
+
+They return a **set of organization ids** rather than taking an id and returning boolean. That shape is what makes `organization_id in (select private.readable_org_ids())` an InitPlan evaluated once per statement. The old `is_org_member(organization_id)` took row data as an argument, so it necessarily ran per row — the `auth_rls_initplan` advisor warning. Wrapping the old form in a subselect would not have fixed it; the signature had to change.
+
+**Cross-organization moves.** RLS cannot express column immutability — `WITH CHECK` sees only the new row, so a user belonging to two organizations could move a row between them and both states would satisfy the policy. A `BEFORE UPDATE` trigger (`private.forbid_org_change()`) enforces it for every role, `service_role` included.
+
+**Grants.** The migration revokes all table privileges from `public`, `anon` and `authenticated`, then grants back exactly what the matrix needs. Exposure no longer depends on project-creation defaults.
+
+Frontend role checks (`src/lib/permissions.ts`, `RequireWrite`) hide actions a role cannot perform. They are UX only — the database refuses the write either way.
+
+### Database tests
+
+```bash
+./supabase/tests/run.sh    # 84 assertions
+```
+
+Stands up a throwaway Postgres 17 cluster, applies `00_supabase_bootstrap.sql` (local-only scaffolding for `auth.uid()`, `storage.objects` and the API roles) followed by the real migrations, then exercises the policies as `authenticated`/`anon` with a `request.jwt.claims` GUC — the same mechanism PostgREST uses. Docker is not required; a local Postgres server is (`brew install postgresql@17`). If none is found the script exits 2 and reports SKIP rather than passing.
+
+Covered: anonymous denied · viewer read-only · member CRUD-minus-delete · admin and owner full CRUD · cross-organization isolation for every role · `organization_id` reassignment refused (including for a user who owns *both* organizations, the only case the trigger and not RLS catches) · membership/profile/organization mutation unavailable · activity log append-only · storage matching the matrix · revoked membership losing access immediately · plus 17 advisor-equivalent assertions.
+
 ## Tests
 
 ```bash
@@ -119,7 +152,7 @@ npm test          # vitest run
 npm run test:watch
 ```
 
-Vitest + jsdom + Testing Library. 32 tests across `src/lib/org.test.ts` (resolver), `src/lib/session.test.tsx` (expiry, notice, redirect) and `src/test/webStorage.test.ts` (Storage conformance). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
+Vitest + jsdom + Testing Library. 42 tests across `src/lib/org.test.ts` (resolver), `src/lib/session.test.tsx` (expiry, notice, redirect), `src/lib/permissions.test.ts` (role capability matrix) and `src/test/webStorage.test.ts` (Storage conformance). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
 
 Verified on Node 20.20.2, 22.22.1, 24.14.0 and 25.9.0.
 
@@ -238,7 +271,6 @@ Phase 2 brought a real Supabase backend online in code; provisioning, the rest o
 - Products / Orders / Purchases / Quotations / Directory / Settings pages are still mock-only or placeholder
 - The Laravel clothing workflow (`products.specifications->inventory_mode = 'clothing'`) has no Supabase equivalent yet — see [`docs/feature-parity-matrix.md`](../../docs/feature-parity-matrix.md)
 - The `scan-process` Edge Function still returns deterministic mock JSON — no real vision provider (OpenAI / Anthropic Claude Vision / Gemini) is wired
-- RLS authorises by *membership only*: `is_org_member()` gates every policy, so a `viewer` has the same write rights as an `owner`. The `org_role` enum exists but is not enforced.
 - No CI/CD, no i18n, no state-management library beyond React local state + URL params. Tests now exist for the organization resolver and session-expiry handling only (see "Tests"); every other module is untested.
 
 ### Live verification status

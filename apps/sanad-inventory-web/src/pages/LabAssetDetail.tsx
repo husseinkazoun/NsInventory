@@ -26,6 +26,7 @@ import {
   listMissingComponents,
   listRecentActivity,
 } from '../lib/queries/assetDetailPanels'
+import { useCapabilities } from '../lib/permissions'
 import { formatRelative } from '../lib/format'
 
 function statusTone(s: AssetStatus): BadgeTone {
@@ -54,6 +55,8 @@ function formatDate(d: Date | null): string {
 
 export default function LabAssetDetail() {
   const { assetId = '' } = useParams<{ assetId: string }>()
+  // UX only — RLS refuses these writes regardless of what is rendered.
+  const { canWrite } = useCapabilities()
   const [asset, setAsset] = useState<LabAsset | null>(null)
   const [inspection, setInspection] = useState<InspectionSummary | null>(null)
   const [missing, setMissing] = useState<MissingComponentRecord[]>([])
@@ -176,9 +179,15 @@ export default function LabAssetDetail() {
         pretitle={`Operations · Assets · ${asset.tag}`}
         title={asset.name}
         actions={
-          <Button to={`/scan/start?asset=${asset.id}`} variant="secondary" Icon={Camera}>
-            Inspect by Scan
-          </Button>
+          canWrite ? (
+            <Button
+              to={`/scan/start?asset=${asset.id}`}
+              variant="secondary"
+              Icon={Camera}
+            >
+              Inspect by Scan
+            </Button>
+          ) : null
         }
       />
 

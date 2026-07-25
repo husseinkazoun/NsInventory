@@ -7,6 +7,7 @@ import { Badge, type BadgeTone } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
 import { type AssetStatus, type LabAsset } from '../lib/mockData'
 import { listLabAssets } from '../lib/queries/labAssets'
+import { useCapabilities } from '../lib/permissions'
 
 function statusTone(s: AssetStatus): BadgeTone {
   if (s === 'active') return 'success'
@@ -17,6 +18,8 @@ function statusTone(s: AssetStatus): BadgeTone {
 
 export default function LabAssets() {
   const navigate = useNavigate()
+  // UX only — RLS refuses these writes regardless of what is rendered.
+  const { canWrite } = useCapabilities()
   const [assets, setAssets] = useState<LabAsset[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -42,14 +45,16 @@ export default function LabAssets() {
       pretitle="Operations · Assets"
       title="Lab Assets"
       actions={
-        <>
-          <Button to="/scan/start" variant="secondary" Icon={Camera}>
-            Start Photo Scan
-          </Button>
-          <Button to="/lab-assets/new" Icon={Plus}>
-            Add Lab Asset
-          </Button>
-        </>
+        canWrite ? (
+          <>
+            <Button to="/scan/start" variant="secondary" Icon={Camera}>
+              Start Photo Scan
+            </Button>
+            <Button to="/lab-assets/new" Icon={Plus}>
+              Add Lab Asset
+            </Button>
+          </>
+        ) : null
       }
     />
   )
@@ -82,16 +87,22 @@ export default function LabAssets() {
         <EmptyState
           Icon={Microscope}
           title="No lab assets yet"
-          description="Get started by adding your first asset or capturing one via photo scan."
+          description={
+            canWrite
+              ? 'Get started by adding your first asset or capturing one via photo scan.'
+              : 'Nothing has been added to this organization yet. Your role gives read-only access.'
+          }
           action={
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              <Button to="/scan/start" variant="secondary" Icon={Camera}>
-                Start Photo Scan
-              </Button>
-              <Button to="/lab-assets/new" Icon={Plus}>
-                Add Lab Asset
-              </Button>
-            </div>
+            canWrite ? (
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button to="/scan/start" variant="secondary" Icon={Camera}>
+                  Start Photo Scan
+                </Button>
+                <Button to="/lab-assets/new" Icon={Plus}>
+                  Add Lab Asset
+                </Button>
+              </div>
+            ) : null
           }
         />
       ) : (
