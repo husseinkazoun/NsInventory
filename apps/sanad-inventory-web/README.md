@@ -96,6 +96,8 @@ Every organization-scoped read and write resolves its `organization_id` from the
 
 Reads are filtered by `organization_id` **in addition to** RLS. RLS alone returns the union of every organization a user belongs to, which is wrong for a multi-org user — the UI shows one active tenant at a time.
 
+> **Setting up a new user is now a required step.** Because there is no development fallback, a freshly created Supabase user with no `organization_members` row sees the "No organization access" screen and no data — that is the resolver working, not a bug. Insert the `profiles` + `organization_members` rows as described at the bottom of [`supabase/seed.sql`](./supabase/seed.sql).
+
 ---
 
 ## Photo Scan flow

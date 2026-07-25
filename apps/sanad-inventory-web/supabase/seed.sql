@@ -62,12 +62,28 @@ values
    '2025-08-20', null, null)
 on conflict (id) do nothing;
 
--- Note: profiles and organization_members are intentionally NOT seeded here.
--- They depend on real auth.users rows. When you connect a real Supabase project,
--- bootstrap your own user via the auth UI then run something like:
+-- =====================================================================
+-- REQUIRED follow-up: grant yourself membership
+-- =====================================================================
+-- profiles and organization_members are NOT seeded here because they depend
+-- on real auth.users rows.
 --
---   insert into public.profiles (id, full_name) values (<your-user-uuid>, 'You')
+-- This step is MANDATORY, not optional. The app resolves its organization
+-- from organization_members and has no development fallback (the former
+-- DEV_ORG_ID constant was removed). Signing in without a membership row lands
+-- you on the "No organization access" screen and you will see no data — that
+-- is the resolver working correctly, not a bug.
+--
+-- After creating your user via the Supabase auth UI, run:
+--
+--   insert into public.profiles (id, full_name)
+--     values ('<your-user-uuid>', 'You')
 --     on conflict (id) do nothing;
---   insert into public.organization_members (organization_id, user_id, role) values
---     ('11111111-1111-1111-1111-111111111111', <your-user-uuid>, 'owner')
+--
+--   insert into public.organization_members (organization_id, user_id, role)
+--     values ('11111111-1111-1111-1111-111111111111', '<your-user-uuid>', 'owner')
 --     on conflict do nothing;
+--
+-- Note: `role` is recorded but NOT yet enforced — every RLS policy currently
+-- gates on membership alone via is_org_member(), so 'viewer' has the same
+-- write access as 'owner'. See docs/feature-parity-matrix.md §4.
