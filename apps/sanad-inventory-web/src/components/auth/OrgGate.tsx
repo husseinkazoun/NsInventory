@@ -1,5 +1,5 @@
 import { Fragment, useState, type ReactNode } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useLocation } from 'react-router-dom'
 import { Building2, LogOut, RefreshCw, ShieldAlert } from 'lucide-react'
 import { BrandMark } from '../brand/BrandMark'
 import { Button } from '../ui/Button'
@@ -19,6 +19,7 @@ import type { OrgMembership } from '../../lib/org'
  */
 export function OrgGate({ children }: { children: ReactNode }) {
   const org = useCurrentOrg()
+  const location = useLocation()
 
   switch (org.status) {
     case 'demo':
@@ -41,7 +42,16 @@ export function OrgGate({ children }: { children: ReactNode }) {
       return <NoMembershipScreen />
 
     case 'session-expired':
-      return <Navigate to="/login" replace />
+      // Same destination-preserving redirect as AuthGuard. Without the `from`
+      // state, a session that lapses here would drop the user on /dashboard
+      // after signing back in instead of the page they asked for.
+      return (
+        <Navigate
+          to="/login"
+          replace
+          state={{ from: `${location.pathname}${location.search}` }}
+        />
+      )
 
     case 'error':
       return <ResolutionErrorScreen message={org.message} onRetry={org.refresh} />

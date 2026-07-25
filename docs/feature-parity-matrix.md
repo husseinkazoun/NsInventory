@@ -44,7 +44,7 @@ Legend: ✅ complete · 🟡 partial · ❌ absent · — not applicable
 | **Public API** | ✅ `GET /api/products` with whitelisted fields | — | Decide whether to preserve |
 | **CSV export** | ✅ Clothing export, 23 columns, UTF-8 BOM for Arabic | ❌ | Port |
 | **Branding / icons** | ✅ | ✅ Copied from root `public/icons/` | Parity |
-| **Tests** | ✅ 69 tests, 209 assertions (per `CLAUDE.md`; not re-run for this branch — no PHP was touched, and PHPUnit is not installed in this checkout) | ❌ None | **Port — no safety net on the React side** |
+| **Tests** | ✅ 69 tests, 209 assertions (per `CLAUDE.md`; not re-run for this branch — no PHP was touched, and PHPUnit is not installed in this checkout) | 🟡 22 tests (Vitest) covering the org resolver and session expiry only; all other modules untested | Extend coverage as modules are ported |
 
 ---
 
@@ -95,6 +95,7 @@ Ordering is by dependency, not by value: each slice unblocks the next.
 | 2 | **No admin concept carried over** | **High** | Laravel gates user management on `users.is_admin`. Supabase has `owner`/`admin` in `org_role` but nothing reads them. The admin gate is lost in the port. |
 | 3 | **`organization_members` has no write policies** | Medium | Only a `select` policy exists — inserts require the service role. Deliberate today, but membership management must be designed, not left to manual SQL. |
 | 4 | **No password reset** | Medium | Laravel has a forgot-password flow with a deliberately generic confirmation. The React app has none. |
+| 4b | ~~Sign-in errors leaked Supabase wording~~ | ~~Medium~~ | **Resolved.** `/login` reported `signInError.message` verbatim, distinguishing "user not found" from "wrong password" and so disclosing which emails are registered. Now a fixed generic string, matching Laravel `5857f61`. |
 | 5 | **No self-registration guard by design** | Low | Laravel explicitly disabled self-registration. Supabase Auth allows sign-up **by default** — this must be turned off in project settings or the disabled-registration decision is silently reversed. **Verify in the dashboard.** |
 | 6 | ~~Hardcoded `DEV_ORG_ID`~~ | ~~High~~ | **Resolved on this branch.** Replaced by the `organization_members`-derived resolver with no fallback. |
 | 7 | ~~Unscoped reads~~ | ~~High~~ | **Resolved on this branch.** `listLabAssets()` and the detail panels relied on RLS alone, which returns the union of all a user's orgs. Now filtered by the active `organization_id`. |
@@ -118,3 +119,18 @@ Foundation only — no clothing migration, no real AI, no deployment.
   organization, including the Storage path prefix that storage RLS parses.
 - Updated the React README, which previously claimed no Supabase project and
   no Cloudflare deployment existed.
+
+Follow-up correction slice (same branch):
+
+- Session expiry is now distinguishable from a deliberate sign-out
+  (`src/lib/authNotice.ts` + a `manualSignOutInFlight` flag in
+  `session.tsx`). `/login` shows one fixed generic message; no Supabase, JWT
+  or PostgREST text reaches the page. The attempted route, query string
+  included, survives the redirect.
+- Fixed three resolver defects found while reviewing for races: a double
+  session read that could pair one user's memberships with another user's
+  stored selection; `OrgGate` dropping the `from` location on redirect; and
+  an error-path cache eviction that compared user ids instead of entry
+  identity.
+- Added a Vitest + jsdom + Testing Library suite (22 tests). **Mocked, not
+  live** — RLS, real PostgREST behaviour and token refresh remain unverified.

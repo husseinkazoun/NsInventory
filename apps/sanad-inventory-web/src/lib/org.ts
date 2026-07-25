@@ -93,10 +93,16 @@ export function isAuthExpiryError(err: unknown): boolean {
 /**
  * Normalises an error coming out of a Supabase call.
  *
- * When the failure is an expired credential we drop the local session so the
- * `SessionProvider` subscription fires, `AuthGuard` redirects to `/login`, and
- * the user sees "session expired" instead of a raw PostgREST string. Scope is
- * `local` on purpose: a server-side sign-out would itself 401 on a dead token.
+ * When the failure is an expired credential we drop the local session. That
+ * emits `SIGNED_OUT`, which `SessionProvider` sees as *not* user-initiated and
+ * therefore records the session-expired notice; `AuthGuard` then redirects to
+ * `/login`, where the notice is displayed. Scope is `local` on purpose: a
+ * server-side sign-out would itself 401 on a dead token.
+ *
+ * Note this function deliberately does **not** raise the notice itself. The
+ * `SIGNED_OUT` handler is the single place that decides expiry-vs-deliberate,
+ * and it also catches the case this function cannot see: a background token
+ * refresh that fails while the tab is idle.
  */
 export function asAppError(err: unknown): unknown {
   if (!isAuthExpiryError(err)) return err
@@ -161,21 +167,37 @@ async function fetchMemberships(userId: string): Promise<OrgMembership[]> {
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
-/** The signed-in user's organizations, newest lookup cached per user id. */
-export function listMemberships(): Promise<OrgMembership[]> {
-  return requireUserId().then((userId) => {
-    if (cache && cache.userId === userId) return cache.memberships
+/**
+ * Memberships for a *specific* user id.
+ *
+ * Takes the id as an argument rather than re-reading the session, so a caller
+ * that has already resolved a user id cannot end up pairing one user's
+ * memberships with another user's stored organization selection.
+ */
+function listMembershipsFor(userId: string): Promise<OrgMembership[]> {
+  if (cache && cache.userId === userId) return cache.memberships
 
-    const memberships = fetchMemberships(userId).catch((err) => {
-      // Never cache a failure — a transient network error would otherwise
-      // pin the user to an error state until the next auth event.
-      if (cache?.userId === userId) cache = null
-      throw err
-    })
-
-    cache = { userId, memberships }
-    return memberships
+  const entry: CacheEntry = { userId, memberships: null as never }
+  entry.memberships = fetchMemberships(userId).catch((err) => {
+    // Never cache a failure — a transient network error would otherwise pin
+    // the user to an error state until the next auth event. Compared by
+    // identity, not user id: if a different user's lookup has replaced this
+    // entry in the meantime, evicting it would be someone else's cache.
+    if (cache === entry) cache = null
+    throw err
   })
+
+  cache = entry
+
+  // Return the locally captured promise, never `cache.memberships`. A
+  // concurrent lookup for a different user may replace `cache` before this
+  // resolves; reading it back would hand this caller the other user's rows.
+  return entry.memberships
+}
+
+/** The signed-in user's organizations, cached per user id. */
+export function listMemberships(): Promise<OrgMembership[]> {
+  return requireUserId().then(listMembershipsFor)
 }
 
 // ── Selected organization (multi-org users) ───────────────────────────
@@ -209,7 +231,7 @@ function writeStoredOrgId(userId: string, orgId: string): void {
  */
 export async function selectOrganization(orgId: string): Promise<void> {
   const userId = await requireUserId()
-  const memberships = await listMemberships()
+  const memberships = await listMembershipsFor(userId)
   if (!memberships.some((m) => m.organizationId === orgId)) {
     throw new Error('You are not a member of that organization.')
   }
@@ -243,9 +265,13 @@ export async function resolveOrgState(): Promise<OrgResolution> {
     throw err
   }
 
+  // Reuse the id resolved above rather than calling listMemberships(), which
+  // would re-read the session. Between the two reads the signed-in user can
+  // change, which would pair one user's memberships with another user's
+  // stored selection.
   let memberships: OrgMembership[]
   try {
-    memberships = await listMemberships()
+    memberships = await listMembershipsFor(userId)
   } catch (err) {
     if (err instanceof SessionExpiredError) return { status: 'session-expired' }
     throw err

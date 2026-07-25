@@ -1,11 +1,23 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { LogIn } from 'lucide-react'
 import { BrandMark } from '../components/brand/BrandMark'
 import { Button } from '../components/ui/Button'
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient'
+import {
+  AUTH_NOTICE_MESSAGES,
+  consumeAuthNotice,
+  type AuthNotice,
+} from '../lib/authNotice'
 
 type LocationState = { from?: string } | null
+
+// Sign-in failures are reported generically. The Supabase message
+// distinguishes "user not found" from "wrong password", which tells an
+// attacker which emails are registered. This mirrors the Laravel app's
+// generic login error (commit 5857f61).
+const GENERIC_SIGN_IN_ERROR =
+  "We couldn't sign you in. Check your email and password, then try again."
 
 export default function Login() {
   const navigate = useNavigate()
@@ -16,6 +28,15 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<AuthNotice | null>(null)
+
+  // Read the one-shot notice once on mount. Guarded against StrictMode's
+  // double-invoked effect: the second pass reads null and must not wipe the
+  // value the first pass captured.
+  useEffect(() => {
+    const pending = consumeAuthNotice()
+    if (pending) setNotice(pending)
+  }, [])
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -33,9 +54,11 @@ export default function Login() {
     })
     setBusy(false)
     if (signInError) {
-      setError(signInError.message)
+      setError(GENERIC_SIGN_IN_ERROR)
       return
     }
+    // A fresh sign-in supersedes any expiry explanation.
+    setNotice(null)
     navigate(from, { replace: true })
   }
 
@@ -59,6 +82,15 @@ export default function Login() {
           <p className="mt-1 text-sm text-slate-500">
             Use your Sanad Inventory credentials.
           </p>
+
+          {notice && (
+            <div
+              role="status"
+              className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+            >
+              {AUTH_NOTICE_MESSAGES[notice]}
+            </div>
+          )}
 
           {!isSupabaseConfigured && (
             <div

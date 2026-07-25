@@ -92,9 +92,42 @@ Every organization-scoped read and write resolves its `organization_id` from the
 | Exactly one organization | Resolved automatically; header shows its name as a plain label |
 | Multiple organizations | Blocking picker; the choice persists in `localStorage` keyed by user id, and a header `<select>` switches tenant. Switching remounts the routed tree so data from the previous org is discarded. A stored id that is no longer a valid membership falls back to the picker, never to an arbitrary org. |
 | No membership | Dedicated "No organization access" screen with a sign-out action — distinguishable from an org that is genuinely empty |
-| Session expired | PostgREST `PGRST301` / HTTP 401 / JWT-expiry messages are classified by `isAuthExpiryError()`; `asAppError()` clears the local session so `AuthGuard` redirects to `/login` with a "session expired" message instead of a raw PostgREST string |
+| Session expired | See "Session expiry" below |
 
 Reads are filtered by `organization_id` **in addition to** RLS. RLS alone returns the union of every organization a user belongs to, which is wrong for a multi-org user — the UI shows one active tenant at a time.
+
+### Session expiry
+
+An expired credential and a deliberate sign-out both end as "no session", and supabase-js emits the same `SIGNED_OUT` event for each with no reason attached. Telling them apart takes an explicit signal:
+
+1. `isAuthExpiryError()` classifies PostgREST `PGRST301`, HTTP 401 and JWT-expiry messages. `asAppError()` converts those into a typed `SessionExpiredError` and drops the local session (`scope: 'local'` — a server round trip would itself 401 on a dead token).
+2. `SessionProvider`'s `SIGNED_OUT` handler is the **single** place that decides why the session ended. A `manualSignOutInFlight` flag, set only by `signOut()` and released in a `finally`, marks deliberate sign-outs. Anything else — including a background token refresh that fails while the tab is idle, which no query-layer code can observe — records the notice.
+3. `authNotice.ts` holds that one-shot notice in `sessionStorage`, so it survives the hard reload that a boot-time refresh failure causes. It is cleared on read.
+4. `AuthGuard` (and `OrgGate`, for the narrow window where it resolves first) redirects to `/login`, preserving the attempted destination *including its query string* in router state.
+5. `/login` consumes the notice and shows a fixed generic string: **"Your session has expired. Please sign in again."** No Supabase, JWT or PostgREST text ever reaches the page.
+
+Sign-in failures are also reported generically — the Supabase message distinguishes "user not found" from "wrong password", which discloses which emails are registered. This matches the Laravel app's generic login error (commit `5857f61`).
+
+Other pages still render `error.message` from failed queries directly. For an expired session that message is the typed, generic one; other PostgREST failures can still surface raw text there. Narrowing that is not yet done.
+
+---
+
+## Tests
+
+```bash
+npm test          # vitest run
+npm run test:watch
+```
+
+Vitest + jsdom + Testing Library. 22 tests across `src/lib/org.test.ts` (resolver) and `src/lib/session.test.tsx` (expiry, notice, redirect). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
+
+> **These are mocked tests, not live verification.** `src/test/fakeSupabase.ts` replaces the Supabase client with a controllable fake. They exercise the resolver's and the session layer's own logic. They do **not** verify RLS policies, real PostgREST behaviour, real token refresh, or Storage — all of which still require a run against a live Supabase project. See "What is not yet verified live".
+
+Covered: single org resolves automatically · multiple orgs require explicit selection · a valid saved selection is restored · a revoked saved org falls back to the picker · no membership yields the no-access state · expiry produces the generic notice · a deliberate sign-out does not · membership data cannot cross between users · the attempted route survives the redirect.
+
+The suite was mutation-checked: silently selecting the first org, accepting a stored org without validating membership, treating every sign-out as an expiry, and dropping the query string from the preserved route each cause failures.
+
+---
 
 > **Setting up a new user is now a required step.** Because there is no development fallback, a freshly created Supabase user with no `organization_members` row sees the "No organization access" screen and no data — that is the resolver working, not a bug. Insert the `profiles` + `organization_members` rows as described at the bottom of [`supabase/seed.sql`](./supabase/seed.sql).
 
@@ -196,7 +229,16 @@ Phase 2 brought a real Supabase backend online in code; provisioning, the rest o
 - The Laravel clothing workflow (`products.specifications->inventory_mode = 'clothing'`) has no Supabase equivalent yet — see [`docs/feature-parity-matrix.md`](../../docs/feature-parity-matrix.md)
 - The `scan-process` Edge Function still returns deterministic mock JSON — no real vision provider (OpenAI / Anthropic Claude Vision / Gemini) is wired
 - RLS authorises by *membership only*: `is_org_member()` gates every policy, so a `viewer` has the same write rights as an `owner`. The `org_role` enum exists but is not enforced.
-- No CI/CD, no tests (planned for a later phase), no i18n, no state-management library beyond React local state + URL params
+- No CI/CD, no i18n, no state-management library beyond React local state + URL params. Tests now exist for the organization resolver and session-expiry handling only (see "Tests"); every other module is untested.
+
+### What is not yet verified live
+
+Everything below is implemented and covered by mocked tests, but has **not** been exercised against a live Supabase project — no run with real credentials has happened on this branch:
+
+- That `organization_members` with the embedded `organizations!inner` select returns rows under the existing RLS policies. Expected to work: `is_org_member()` is `SECURITY DEFINER`, so it reads the table as owner and cannot recurse through the policy being evaluated.
+- That a genuinely expired JWT produces `PGRST301` / 401 in the shape `isAuthExpiryError()` matches.
+- That a background token-refresh failure emits `SIGNED_OUT` rather than another event.
+- Storage upload under the `{organization_id}/…` path RLS.
 
 ---
 
