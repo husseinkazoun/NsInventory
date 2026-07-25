@@ -119,13 +119,23 @@ npm test          # vitest run
 npm run test:watch
 ```
 
-Vitest + jsdom + Testing Library. 22 tests across `src/lib/org.test.ts` (resolver) and `src/lib/session.test.tsx` (expiry, notice, redirect). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
+Vitest + jsdom + Testing Library. 32 tests across `src/lib/org.test.ts` (resolver), `src/lib/session.test.tsx` (expiry, notice, redirect) and `src/test/webStorage.test.ts` (Storage conformance). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
+
+Verified on Node 20.20.2, 22.22.1, 24.14.0 and 25.9.0.
+
+### Node's built-in Web Storage
+
+Node 22 introduced `localStorage` / `sessionStorage` globals; from Node 25 they are present by default. They are file-backed, and without a valid `--localstorage-file` Node still exposes the globals but they are hollow — `typeof localStorage.clear === 'undefined'`. Under Vitest's jsdom environment `window === globalThis`, so Node's global shadows jsdom's spec-compliant implementation and every test that touches storage fails with `window.localStorage.clear is not a function`.
+
+`src/test/webStorage.ts` replaces those globals with a real implementation of the WHATWG Storage interface, but only when the existing one does not survive a set/get/remove round trip — so on Node 20, where jsdom's own Storage is used, nothing is touched. `src/test/webStorage.test.ts` asserts the conformance details the suite depends on: `getItem` returning `null` rather than `undefined`, key/value stringification, insertion-ordered `key(index)`, and `localStorage` being independent of `sessionStorage`.
+
+> Node still prints ``Warning: `--localstorage-file` was provided without a valid path`` once per worker on Node ≥ 25. That is Node reporting that *its* storage is unusable — which is exactly why the replacement exists. It is expected and does not indicate a test failure.
 
 > **These are mocked tests, not live verification.** `src/test/fakeSupabase.ts` replaces the Supabase client with a controllable fake. They exercise the resolver's and the session layer's own logic. They do **not** verify RLS policies, real PostgREST behaviour, real token refresh, or Storage — all of which still require a run against a live Supabase project. See "What is not yet verified live".
 
 Covered: single org resolves automatically · multiple orgs require explicit selection · a valid saved selection is restored · a revoked saved org falls back to the picker · no membership yields the no-access state · expiry produces the generic notice · a deliberate sign-out does not · membership data cannot cross between users · the attempted route survives the redirect.
 
-The suite was mutation-checked: silently selecting the first org, accepting a stored org without validating membership, treating every sign-out as an expiry, and dropping the query string from the preserved route each cause failures.
+The suite was mutation-checked — each of these deliberate breakages causes failures, so the assertions are not passing vacuously: silently selecting the first org; accepting a stored org without validating membership; treating every sign-out as an expiry; dropping the query string from the preserved route; re-reading the session inside the membership fetch instead of using the resolved id; and, in the Storage replacement, a no-op `setItem`, a no-op `clear()`, or `getItem` returning `undefined` instead of `null`.
 
 ---
 

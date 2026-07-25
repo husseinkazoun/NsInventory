@@ -44,7 +44,7 @@ Legend: ✅ complete · 🟡 partial · ❌ absent · — not applicable
 | **Public API** | ✅ `GET /api/products` with whitelisted fields | — | Decide whether to preserve |
 | **CSV export** | ✅ Clothing export, 23 columns, UTF-8 BOM for Arabic | ❌ | Port |
 | **Branding / icons** | ✅ | ✅ Copied from root `public/icons/` | Parity |
-| **Tests** | ✅ 69 tests, 209 assertions (per `CLAUDE.md`; not re-run for this branch — no PHP was touched, and PHPUnit is not installed in this checkout) | 🟡 22 tests (Vitest) covering the org resolver and session expiry only; all other modules untested | Extend coverage as modules are ported |
+| **Tests** | ✅ 69 tests, 209 assertions (per `CLAUDE.md`; not re-run for this branch — no PHP was touched, and PHPUnit is not installed in this checkout) | 🟡 32 tests (Vitest) covering the org resolver, session expiry and the test-environment Storage only; all other modules untested | Extend coverage as modules are ported |
 
 ---
 
@@ -132,5 +132,9 @@ Follow-up correction slice (same branch):
   stored selection; `OrgGate` dropping the `from` location on redirect; and
   an error-path cache eviction that compared user ids instead of entry
   identity.
-- Added a Vitest + jsdom + Testing Library suite (22 tests). **Mocked, not
+- Added a Vitest + jsdom + Testing Library suite (32 tests). **Mocked, not
   live** — RLS, real PostgREST behaviour and token refresh remain unverified.
+- Test environment supplies its own WHATWG-conformant `localStorage` /
+  `sessionStorage`. Node ≥ 22 ships hollow Web Storage globals that shadow
+  jsdom's under Vitest; on Node 25 this failed all 22 tests. Verified on Node
+  20, 22, 24 and 25.
