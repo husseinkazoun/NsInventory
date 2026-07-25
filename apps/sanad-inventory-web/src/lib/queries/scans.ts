@@ -1,5 +1,6 @@
 import { currentUserId, supabase } from '../supabaseClient'
-import { DEV_ORG_ID, createLabAsset } from './labAssets'
+import { asAppError, isAuthExpiryError, resolveCurrentOrgId } from '../org'
+import { createLabAsset } from './labAssets'
 import type { AssetCondition } from '../mockData'
 
 export type ScanType = 'intake' | 'condition' | 'missing'
@@ -92,17 +93,18 @@ export async function startScanSession(input: {
   if (!supabase) {
     return { id: newId() }
   }
+  const organizationId = await resolveCurrentOrgId()
   const { data, error } = await supabase
     .from('scan_sessions')
     .insert({
-      organization_id: DEV_ORG_ID,
+      organization_id: organizationId,
       lab_asset_id: input.labAssetId ?? null,
       scan_type: input.scanType,
       status: 'in_progress',
     })
     .select('id')
     .single()
-  if (error) throw error
+  if (error) throw asAppError(error)
   return { id: data.id }
 }
 
@@ -123,11 +125,15 @@ export async function uploadScanPhoto(input: {
     }
   }
 
+  // Resolve the org *before* touching Storage. The leading path segment is
+  // what `scan_object_org()` parses for storage RLS, so an unresolved org
+  // would surface as an opaque 403 on upload instead of a legible error.
+  const organizationId = await resolveCurrentOrgId()
+
   // Path convention: '{organization_id}/{scan_session_id}/{ts}-{rand}.{ext}'.
-  // The org segment is what `scan_object_org()` parses for storage RLS.
   const ext = input.file.name.split('.').pop() || 'bin'
   const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
-  const imagePath = `${DEV_ORG_ID}/${input.scanSessionId}/${filename}`
+  const imagePath = `${organizationId}/${input.scanSessionId}/${filename}`
 
   const { error: uploadError } = await supabase.storage
     .from('lab-asset-scans')
@@ -135,12 +141,12 @@ export async function uploadScanPhoto(input: {
       contentType: input.file.type || 'application/octet-stream',
       upsert: false,
     })
-  if (uploadError) throw uploadError
+  if (uploadError) throw asAppError(uploadError)
 
   const { data, error: insertError } = await supabase
     .from('photo_scans')
     .insert({
-      organization_id: DEV_ORG_ID,
+      organization_id: organizationId,
       scan_session_id: input.scanSessionId,
       image_path: imagePath,
       photo_type: photoType,
@@ -148,7 +154,7 @@ export async function uploadScanPhoto(input: {
     })
     .select('id')
     .single()
-  if (insertError) throw insertError
+  if (insertError) throw asAppError(insertError)
 
   return { photoScanId: data.id, imagePath }
 }
@@ -201,6 +207,11 @@ export async function processScanPhoto(input: {
 
     return response
   } catch (err) {
+    // An expired credential is not an "Edge Function is down" condition —
+    // masking it with mock output would hide the real problem. Re-throw so the
+    // session-expiry path (sign out + redirect to /login) runs.
+    if (isAuthExpiryError(err)) throw asAppError(err)
+
     // Edge Function unreachable / errored — fall back to the offline mock
     // and surface a warning in the UI so users know it's a placeholder.
     const message = err instanceof Error ? err.message : String(err)
@@ -236,6 +247,7 @@ export async function completeScanSession(input: {
     return { labAssetId: input.labAssetId ?? null }
   }
 
+  const organizationId = await resolveCurrentOrgId()
   let labAssetId = input.labAssetId ?? null
 
   // Intake: auto-create a lab_assets row from the suggested fields.
@@ -269,7 +281,7 @@ export async function completeScanSession(input: {
     input.extracted.missing_components.length > 0
   ) {
     const rows = input.extracted.missing_components.map((m) => ({
-      organization_id: DEV_ORG_ID,
+      organization_id: organizationId,
       lab_asset_id: labAssetId,
       scan_session_id: input.scanSessionId,
       component_name: m.component_name,
@@ -278,7 +290,7 @@ export async function completeScanSession(input: {
     const { error: missErr } = await supabase
       .from('missing_components')
       .insert(rows)
-    if (missErr) throw missErr
+    if (missErr) throw asAppError(missErr)
   }
 
   // Close the session.
@@ -291,14 +303,15 @@ export async function completeScanSession(input: {
       completed_at: new Date().toISOString(),
     })
     .eq('id', input.scanSessionId)
-  if (sessionErr) throw sessionErr
+    .eq('organization_id', organizationId)
+  if (sessionErr) throw asAppError(sessionErr)
 
   // Activity log entry — RLS-checked via is_org_member.
   if (labAssetId) {
     const pct = Math.round((input.extracted.confidence ?? 0) * 100)
     const performedBy = await currentUserId()
     await supabase.from('activity_log').insert({
-      organization_id: DEV_ORG_ID,
+      organization_id: organizationId,
       entity_type: 'lab_asset',
       entity_id: labAssetId,
       action: 'scanned',

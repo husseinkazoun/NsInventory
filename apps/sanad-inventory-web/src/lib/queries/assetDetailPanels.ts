@@ -1,4 +1,5 @@
 import { supabase } from '../supabaseClient'
+import { asAppError, resolveCurrentOrgId } from '../org'
 import {
   activityByAsset as mockActivity,
   inspectionByAsset as mockInspection,
@@ -30,22 +31,26 @@ export async function getInspectionSummary(
     detected_condition?: AssetCondition | null
   }
 
+  const organizationId = await resolveCurrentOrgId()
+
   const { data: session, error: sessErr } = await supabase
     .from('scan_sessions')
     .select('completed_at, summary')
+    .eq('organization_id', organizationId)
     .eq('lab_asset_id', assetId)
     .eq('status', 'completed')
     .order('completed_at', { ascending: false, nullsFirst: false })
     .limit(1)
     .maybeSingle()
-  if (sessErr) throw sessErr
+  if (sessErr) throw asAppError(sessErr)
 
   const { count: missingCount, error: missErr } = await supabase
     .from('missing_components')
     .select('id', { count: 'exact', head: true })
+    .eq('organization_id', organizationId)
     .eq('lab_asset_id', assetId)
     .eq('status', 'missing')
-  if (missErr) throw missErr
+  if (missErr) throw asAppError(missErr)
 
   if (!session) return null
 
@@ -68,13 +73,15 @@ export async function listMissingComponents(
 ): Promise<MissingComponentRecord[]> {
   if (!supabase) return mockMissing[assetId] ?? []
 
+  const organizationId = await resolveCurrentOrgId()
   const { data, error } = await supabase
     .from('missing_components')
     .select('id, component_name, severity, detected_at')
+    .eq('organization_id', organizationId)
     .eq('lab_asset_id', assetId)
     .eq('status', 'missing')
     .order('detected_at', { ascending: false })
-  if (error) throw error
+  if (error) throw asAppError(error)
 
   type Row = {
     id: string
@@ -103,14 +110,16 @@ export async function listRecentActivity(
 ): Promise<ActivityEvent[]> {
   if (!supabase) return mockActivity[assetId] ?? []
 
+  const organizationId = await resolveCurrentOrgId()
   const { data, error } = await supabase
     .from('activity_log')
     .select('id, action, description, performed_at, performed_by')
+    .eq('organization_id', organizationId)
     .eq('entity_type', 'lab_asset')
     .eq('entity_id', assetId)
     .order('performed_at', { ascending: false })
     .limit(20)
-  if (error) throw error
+  if (error) throw asAppError(error)
 
   type Row = {
     id: string

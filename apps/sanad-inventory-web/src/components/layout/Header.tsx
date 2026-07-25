@@ -1,8 +1,53 @@
-import { Menu, LogOut } from 'lucide-react'
+import { Building2, Menu, LogOut } from 'lucide-react'
 import { signOut, useSession } from '../../lib/session'
+import { useCurrentOrg } from '../../lib/orgContext'
 
 type Props = {
   onOpenSidebar: () => void
+}
+
+/**
+ * Active-organization indicator.
+ *
+ * Single-org users get a plain label; multi-org users get a switcher. Showing
+ * the tenant at all times matters once a user can belong to more than one —
+ * otherwise "which org did I just file this asset under?" is unanswerable.
+ */
+function OrgIndicator() {
+  const org = useCurrentOrg()
+  if (org.status !== 'ready') return null
+
+  if (org.memberships.length < 2) {
+    return (
+      <div className="hidden sm:flex items-center gap-1.5 text-sm text-slate-600">
+        <Building2 className="h-4 w-4 text-slate-400" aria-hidden="true" />
+        <span className="max-w-[14rem] truncate">{org.membership.name}</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <Building2 className="h-4 w-4 text-slate-400" aria-hidden="true" />
+      <label htmlFor="org-switcher" className="sr-only">
+        Active organization
+      </label>
+      <select
+        id="org-switcher"
+        value={org.organizationId}
+        onChange={(e) => {
+          void org.selectOrganization(e.target.value)
+        }}
+        className="h-8 max-w-[12rem] rounded-md border border-ns-border-soft bg-white px-2 text-sm text-slate-700 focus:border-ns-blue focus:outline-none focus:ring-4 focus:ring-ns-blue/15"
+      >
+        {org.memberships.map((m) => (
+          <option key={m.organizationId} value={m.organizationId}>
+            {m.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
 }
 
 function initialsOf(name: string): string {
@@ -36,6 +81,8 @@ export function Header({ onOpenSidebar }: Props) {
       </button>
 
       <div className="flex-1" />
+
+      <OrgIndicator />
 
       <div className="flex items-center gap-2 pl-2 border-l border-ns-border-soft">
         <div

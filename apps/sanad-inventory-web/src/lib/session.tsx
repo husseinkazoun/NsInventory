@@ -7,6 +7,7 @@ import {
 } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './supabaseClient'
+import { clearOrgCache } from './org'
 
 type SessionContextValue = {
   session: Session | null
@@ -35,8 +36,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setLoading(false)
     })
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, next) => {
       if (!active) return
+      // Memberships are per-user; drop the cache on anything that changes who
+      // (or whether) someone is signed in. TOKEN_REFRESHED keeps the cache.
+      if (event !== 'TOKEN_REFRESHED') clearOrgCache()
       setSession(next)
     })
 

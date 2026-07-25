@@ -13,6 +13,7 @@ import Directory from './pages/Directory'
 import Settings from './pages/Settings'
 import { AppShellLayout } from './components/layout/AppShellLayout'
 import { AuthGuard } from './components/auth/AuthGuard'
+import { OrgGate } from './components/auth/OrgGate'
 
 export function AppRoutes() {
   return (
@@ -20,11 +21,14 @@ export function AppRoutes() {
       {/* Public */}
       <Route path="/login" element={<Login />} />
 
-      {/* Protected — everything below renders inside <AppShell> */}
+      {/* Protected — AuthGuard proves *who*, OrgGate proves *which tenant*.
+          Nothing organization-scoped renders until both are resolved. */}
       <Route
         element={
           <AuthGuard>
-            <AppShellLayout />
+            <OrgGate>
+              <AppShellLayout />
+            </OrgGate>
           </AuthGuard>
         }
       >

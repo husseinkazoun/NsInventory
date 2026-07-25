@@ -14,11 +14,13 @@ A minimal, polished app shell that mirrors the Laravel dashboard's visual direct
 - Tailwind CSS 3 with Sanad brand tokens
 - React Router 6 (client-side routing)
 - Lucide icons
-- **Static, typed mock data only** — no backend, no Laravel calls, no Cloudflare yet
+- **Supabase backend** for auth, the lab-asset/scan domain, Storage and the `scan-process` Edge Function — a project is linked locally (`supabase/.temp/`, gitignored). No Laravel calls.
+- **Deployed to Cloudflare Pages** at <https://sanad-inventory.pages.dev>. `sanadinventory.com` still points at the Laravel application; this deployment does not serve it.
+- Mock data remains for the modules not yet ported (see "What is mocked")
 
 ### Routes
 
-`/login` is public; everything else is wrapped in `AuthGuard` (transparent in demo mode, real session-gated in Supabase mode).
+`/login` is public; everything else is wrapped in `AuthGuard` then `OrgGate` (both transparent in demo mode; session-gated and organization-gated in Supabase mode).
 
 | Route | Status |
 |---|---|
@@ -54,8 +56,8 @@ The app boots in one of two modes depending on env vars:
 
 | Mode | Trigger | Behaviour |
 |---|---|---|
-| **Demo** | `VITE_SUPABASE_URL` and/or `VITE_SUPABASE_ANON_KEY` unset | Mock data renders, `AuthGuard` is bypassed, header shows the placeholder "Admin" identity, the `/login` page surfaces a yellow "demo mode" notice. Used for offline previews and design reviews. |
-| **Supabase** | Both env vars set | Routes are guarded by `AuthGuard`; unauthenticated visits redirect to `/login`. The header reflects the real signed-in profile and adds a sign-out button. |
+| **Demo** | `VITE_SUPABASE_URL` and/or `VITE_SUPABASE_ANON_KEY` unset | Mock data renders, `AuthGuard` and `OrgGate` are bypassed, header shows the placeholder "Admin" identity, the `/login` page surfaces a yellow "demo mode" notice. Used for offline previews and design reviews. |
+| **Supabase** | Both env vars set | Routes are guarded by `AuthGuard` then `OrgGate`; unauthenticated visits redirect to `/login`. The header reflects the real signed-in profile, the active organization, and a sign-out button. This is the mode the Cloudflare Pages deployment runs in. |
 
 To enable Supabase mode locally:
 
@@ -67,11 +69,32 @@ npm run dev
 
 `.env.local` is gitignored.
 
-### Cloudflare Pages note
+### Cloudflare Pages
+
+This app is deployed at <https://sanad-inventory.pages.dev>. The Pages project uses **root directory** `apps/sanad-inventory-web`, build command `npm run build`, output directory `dist`, and `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` set under Environment variables.
+
+`sanadinventory.com` is **not** attached to this Pages project — that domain serves the Laravel application from the VM and is out of scope for the transition until an explicit cutover is agreed.
 
 `public/_redirects` ships with the SPA fallback rule `/*  /index.html  200`. Vite copies it verbatim into `dist/_redirects` at build time, so Cloudflare Pages resolves deep-link refreshes (e.g. `/lab-assets/:id`, `/scan/start`) to the SPA shell out of the box — no extra `wrangler.toml` or `_routes.json` needed.
 
-When wiring the Pages project, set its **root directory** to `apps/sanad-inventory-web`, build command to `npm run build`, output directory to `dist`, and add `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` under Environment variables.
+---
+
+## Organization scoping (multi-tenancy)
+
+Every organization-scoped read and write resolves its `organization_id` from the signed-in user's `organization_members` rows. There is **no development-org fallback** — an unresolved organization is an error, never a default.
+
+- `src/lib/org.ts` — framework-free resolver. `resolveCurrentOrgId()` is what the query layer awaits; `resolveOrgState()` returns the same answer as data so the UI can render one screen per state. Memberships are cached per user id and dropped on any auth state change other than `TOKEN_REFRESHED`.
+- `src/lib/orgContext.tsx` — `OrgProvider` / `useCurrentOrg()`. Reads the *same* module state, so the UI and the query layer can never disagree about the active tenant.
+- `src/components/auth/OrgGate.tsx` — renders the app only once an organization is resolved.
+
+| State | Behaviour |
+|---|---|
+| Exactly one organization | Resolved automatically; header shows its name as a plain label |
+| Multiple organizations | Blocking picker; the choice persists in `localStorage` keyed by user id, and a header `<select>` switches tenant. Switching remounts the routed tree so data from the previous org is discarded. A stored id that is no longer a valid membership falls back to the picker, never to an arbitrary org. |
+| No membership | Dedicated "No organization access" screen with a sign-out action — distinguishable from an org that is genuinely empty |
+| Session expired | PostgREST `PGRST301` / HTTP 401 / JWT-expiry messages are classified by `isAuthExpiryError()`; `asAppError()` clears the local session so `AuthGuard` redirects to `/login` with a "session expired" message instead of a raw PostgREST string |
+
+Reads are filtered by `organization_id` **in addition to** RLS. RLS alone returns the union of every organization a user belongs to, which is wrong for a multi-org user — the UI shows one active tenant at a time.
 
 ---
 
@@ -158,13 +181,19 @@ Phase 2 brought a real Supabase backend online in code; provisioning, the rest o
 - `scan-process` Edge Function (Deno) returning deterministic mock JSON keyed by scan type
 - Cloudflare Pages SPA fallback via `public/_redirects`
 
+- Current-organization resolver (`src/lib/org.ts` + `src/lib/orgContext.tsx` + `components/auth/OrgGate.tsx`) — organization scope comes from the signed-in user's `organization_members` rows, with no development fallback
+
+**Already deployed:**
+- A Supabase project **is** linked (locally, via `supabase/.temp/linked-project.json`, which is gitignored — the project ref is deliberately not committed). Migrations, seed, Storage bucket and the `scan-process` function target it.
+- A Cloudflare Pages project **is** live at <https://sanad-inventory.pages.dev>, built from `apps/sanad-inventory-web` with `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` set in the Pages environment.
+- `sanadinventory.com` is **not** served by this app — it still resolves to the Laravel application on the VM, and this transition must not change that.
+
 **Not yet:**
-- No live Supabase project is provisioned — the migrations and seed are ready to run, but no `<project-ref>` has been linked. Demo mode is the only mode that runs today.
-- No Cloudflare Pages project, no DNS for `sanadinventory.com`
-- Dashboard KPIs still render from `mockData.kpis`; the Lab Asset detail panels (Inspection / Missing / Activity) still read from mock helpers
+- Dashboard KPIs still render from `mockData.kpis`; the Lab Asset detail panels (Inspection / Missing / Activity) read live tables but the KPI header does not
 - Products / Orders / Purchases / Quotations / Directory / Settings pages are still mock-only or placeholder
-- `DEV_ORG_ID` is hardcoded in `queries/labAssets.ts` and `queries/scans.ts` — to be replaced with a `useCurrentOrg()` hook reading from `organization_members`
+- The Laravel clothing workflow (`products.specifications->inventory_mode = 'clothing'`) has no Supabase equivalent yet — see [`docs/feature-parity-matrix.md`](../../docs/feature-parity-matrix.md)
 - The `scan-process` Edge Function still returns deterministic mock JSON — no real vision provider (OpenAI / Anthropic Claude Vision / Gemini) is wired
+- RLS authorises by *membership only*: `is_org_member()` gates every policy, so a `viewer` has the same write rights as an `owner`. The `org_role` enum exists but is not enforced.
 - No CI/CD, no tests (planned for a later phase), no i18n, no state-management library beyond React local state + URL params
 
 ---
@@ -204,12 +233,15 @@ apps/sanad-inventory-web/
 │   │   ├── format.ts                ← Intl number / relative date
 │   │   ├── supabaseClient.ts        ← singleton Supabase client (null in demo mode) + currentUserId()
 │   │   ├── session.tsx              ← <SessionProvider> + useSession() + signOut()
+│   │   ├── org.ts                   ← current-organization resolver + typed errors + auth-expiry classifier
+│   │   ├── orgContext.tsx           ← <OrgProvider> + useCurrentOrg() over the same module state
 │   │   └── queries/
 │   │       ├── labAssets.ts         ← listLabAssets / getLabAsset / createLabAsset (mock fallback)
 │   │       └── scans.ts             ← startScanSession / uploadScanPhoto / processScanPhoto /
 │   │                                   completeScanSession (mock fallback + offline-mock recovery)
 │   ├── components/
 │   │   ├── auth/AuthGuard.tsx       ← demo-mode bypass, Supabase-mode session gate
+│   │   ├── auth/OrgGate.tsx         ← org picker / no-membership / expired-session screens
 │   │   ├── brand/BrandMark.tsx
 │   │   ├── layout/{AppShell,AppShellLayout,Header,Sidebar}.tsx
 │   │   └── ui/{Badge,Button,EmptyState,PageHeader,QuickActionTile,SectionTitle,StatCard}.tsx

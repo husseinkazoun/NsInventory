@@ -1,6 +1,9 @@
 # Supabase CLI project config for Sanad Inventory.
-# Local development conventions; no live project is linked yet.
-# When connecting to a real Supabase project, run:
+#
+# Ports below are the LOCAL development stack (`supabase start`). A hosted
+# project is already linked on the maintainer's machine; the link lives in
+# `supabase/.temp/linked-project.json`, which is gitignored so the project ref
+# is never committed. To link a fresh checkout:
 #   supabase link --project-ref <project-ref>
 
 project_id = "sanad-inventory"
