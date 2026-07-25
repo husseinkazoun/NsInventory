@@ -241,14 +241,31 @@ Phase 2 brought a real Supabase backend online in code; provisioning, the rest o
 - RLS authorises by *membership only*: `is_org_member()` gates every policy, so a `viewer` has the same write rights as an `owner`. The `org_role` enum exists but is not enforced.
 - No CI/CD, no i18n, no state-management library beyond React local state + URL params. Tests now exist for the organization resolver and session-expiry handling only (see "Tests"); every other module is untested.
 
-### What is not yet verified live
+### Live verification status
 
-Everything below is implemented and covered by mocked tests, but has **not** been exercised against a live Supabase project — no run with real credentials has happened on this branch:
+Read-only verification was run against the linked Supabase project on 2026-07-25 via `supabase db query --linked` and direct PostgREST calls. No data, policy, user or remote setting was modified.
 
-- That `organization_members` with the embedded `organizations!inner` select returns rows under the existing RLS policies. Expected to work: `is_org_member()` is `SECURITY DEFINER`, so it reads the table as owner and cannot recurse through the policy being evaluated.
-- That a genuinely expired JWT produces `PGRST301` / 401 in the shape `isAuthExpiryError()` matches.
-- That a background token-refresh failure emits `SIGNED_OUT` rather than another event.
-- Storage upload under the `{organization_id}/…` path RLS.
+**Verified live:**
+
+| Claim | Evidence |
+|---|---|
+| Migrations are applied | All 10 tables present, `relrowsecurity = true` on every one |
+| The resolver's membership query works under RLS | Simulated the real user (`set local role authenticated` + `request.jwt.claims`); the `organization_members ⋈ organizations` join returned the row. `is_org_member()` does not recurse — previously an assumption, now proven |
+| The `organizations!inner` PostgREST embed resolves | The exact select string from `org.ts` returns HTTP 200. Control: a bogus relationship returns HTTP 400 `PGRST200`, so the 200 is meaningful |
+| RLS denies `anon` | Same embed as `anon` returns `[]`, not rows — despite `anon` holding table-level DML grants |
+| `isAuthExpiryError()` matches reality | A malformed and an expired/badly-signed JWT both return **HTTP 401 with `code: "PGRST301"`**. Neither message contains "expired", which is why the classifier keys off the code, not message text |
+| Storage is provisioned | Bucket `lab-asset-scans` exists and is private, with all four `storage.objects` policies |
+| `scan_object_org()` parses the app's path convention | Returns the org UUID for `{org}/{session}/{file}` and `null` for a non-UUID prefix |
+| `scan-process` is deployed | ACTIVE, version 2 |
+| Tables are exposed to the Data API | `anon`/`authenticated`/`service_role` hold full DML grants. The project predates the 2026-05-30 opt-in change, so no explicit `GRANT`s were needed — see the caveat below |
+
+**Still not verified live:**
+
+- That a background token-refresh failure emits `SIGNED_OUT` rather than another event. This is client-side supabase-js behaviour and cannot be observed from the database.
+- An actual authenticated Storage upload under the `{organization_id}/…` path. The bucket, policies and path parser are confirmed, but performing an upload would write data.
+- The app running end-to-end in Supabase mode — there is still no `.env.local`.
+
+> **Data API caveat.** Nothing in the migrations grants anything; the tables are reachable only because this project predates Supabase's switch to opt-in Data API exposure (changelog 2026-04-28, default for projects created after 2026-05-30 — this project was created 2026-05-18, an 11-day margin). If the project is ever recreated, every table becomes invisible to the client with a symptom that looks nothing like a grants problem. Add explicit `GRANT`s in the RLS slice.
 
 ---
 
