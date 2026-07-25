@@ -164,7 +164,7 @@ npm test          # vitest run
 npm run test:watch
 ```
 
-Vitest + jsdom + Testing Library. 84 tests across `src/lib/org.test.ts` (resolver), `src/lib/session.test.tsx` (expiry, notice, redirect), `src/lib/permissions.test.ts` (role capability matrix), `src/test/webStorage.test.ts` (Storage conformance) `supabase/staging/plan.test.mjs` (staging bootstrap plan and guards) and `supabase/staging/nodeVersion.test.mjs` (Node 22+ preflight, including real subprocess runs on an older runtime). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
+Vitest + jsdom + Testing Library. 95 tests across `src/lib/org.test.ts` (resolver), `src/lib/session.test.tsx` (expiry, notice, redirect), `src/lib/permissions.test.ts` (role capability matrix), `src/test/webStorage.test.ts` (Storage conformance) `supabase/staging/plan.test.mjs` (staging bootstrap plan and guards) and `supabase/staging/nodeVersion.test.mjs` (Node 22+ preflight, including real subprocess runs on an older runtime) and `src/pages/Login.test.tsx` (the first-sign-in redirect race). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
 
 Verified on Node 20.20.2, 22.22.1, 24.14.0 and 25.9.0.
 

@@ -37,6 +37,8 @@ type State = {
   authListeners: Array<(event: string, session: unknown) => void>
   signOutCalls: Array<{ scope?: string }>
   signOutRejects: boolean
+  /** When set, signInWithPassword reports this instead of succeeding. */
+  signInError: { message: string } | null
 }
 
 const state: State = {
@@ -47,6 +49,7 @@ const state: State = {
   authListeners: [],
   signOutCalls: [],
   signOutRejects: false,
+  signInError: null,
 }
 
 export function resetFakeSupabase(): void {
@@ -57,6 +60,7 @@ export function resetFakeSupabase(): void {
   state.authListeners = []
   state.signOutCalls = []
   state.signOutRejects = false
+  state.signInError = null
 }
 
 export function setSignedInUser(userId: string | null): void {
@@ -91,6 +95,11 @@ export function setQueryError(error: unknown | null): void {
 
 export function setSignOutRejects(value: boolean): void {
   state.signOutRejects = value
+}
+
+/** Makes the next signInWithPassword fail, as a wrong password would. */
+export function setSignInError(error: { message: string } | null): void {
+  state.signInError = error
 }
 
 export function getSignOutCalls(): Array<{ scope?: string }> {
@@ -137,7 +146,17 @@ const client = {
       if (state.signOutRejects) throw new Error('network failure')
       return { error: null }
     },
-    async signInWithPassword() {
+    /**
+     * Mirrors supabase-js: on success the session is stored immediately, but
+     * subscribers are notified asynchronously. The fake therefore updates the
+     * signed-in user WITHOUT emitting `SIGNED_IN` — the test emits it when it
+     * wants the event to land. That gap is exactly the first-login race.
+     */
+    async signInWithPassword({ email }: { email?: string } = {}) {
+      if (state.signInError) {
+        return { data: { session: null }, error: state.signInError }
+      }
+      state.userId = state.userId ?? `user-${(email ?? 'anon').split('@')[0]}`
       return { data: { session: sessionPayload() }, error: null }
     },
   },

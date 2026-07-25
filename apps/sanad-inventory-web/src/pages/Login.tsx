@@ -4,6 +4,7 @@ import { LogIn } from 'lucide-react'
 import { BrandMark } from '../components/brand/BrandMark'
 import { Button } from '../components/ui/Button'
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient'
+import { useSession } from '../lib/session'
 import {
   AUTH_NOTICE_MESSAGES,
   consumeAuthNotice,
@@ -11,6 +12,22 @@ import {
 } from '../lib/authNotice'
 
 type LocationState = { from?: string } | null
+
+const DEFAULT_DESTINATION = '/dashboard'
+
+/**
+ * Where to send a signed-in visitor.
+ *
+ * Falls back to the dashboard when there is no attempted destination, and also
+ * when the attempt was `/login` itself — redirecting a public route to itself
+ * would loop forever.
+ */
+function resolveDestination(from: string | undefined): string {
+  if (!from || from === '/login' || from.startsWith('/login?')) {
+    return DEFAULT_DESTINATION
+  }
+  return from
+}
 
 // Sign-in failures are reported generically. The Supabase message
 // distinguishes "user not found" from "wrong password", which tells an
@@ -22,7 +39,10 @@ const GENERIC_SIGN_IN_ERROR =
 export default function Login() {
   const navigate = useNavigate()
   const location = useLocation()
-  const from = (location.state as LocationState)?.from ?? '/dashboard'
+  const { session } = useSession()
+  const destination = resolveDestination(
+    (location.state as LocationState)?.from,
+  )
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -38,6 +58,23 @@ export default function Login() {
     if (pending) setNotice(pending)
   }, [])
 
+  /**
+   * Redirect on the *session*, not on the sign-in call returning.
+   *
+   * `signInWithPassword()` resolves as soon as the credential is accepted, but
+   * supabase-js notifies subscribers asynchronously, so `SessionProvider` still
+   * holds `null` for a moment afterwards. Navigating at that instant put the
+   * user in front of `AuthGuard` while it still saw no session, and it bounced
+   * them straight back here — authenticated, but stranded on the sign-in page
+   * with no error, needing a second submit.
+   *
+   * Waiting for the session removes the race, and the same effect covers an
+   * already-authenticated visit to /login, which previously just sat there.
+   */
+  useEffect(() => {
+    if (session) navigate(destination, { replace: true })
+  }, [session, destination, navigate])
+
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     if (!supabase) {
@@ -52,14 +89,16 @@ export default function Login() {
       email,
       password,
     })
-    setBusy(false)
     if (signInError) {
+      setBusy(false)
       setError(GENERIC_SIGN_IN_ERROR)
       return
     }
     // A fresh sign-in supersedes any expiry explanation.
     setNotice(null)
-    navigate(from, { replace: true })
+    // Deliberately stay busy: the redirect happens in the effect above, once
+    // the session actually lands. Re-enabling the form here would briefly
+    // invite a second submit that is already in flight.
   }
 
   return (
