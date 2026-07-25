@@ -171,6 +171,22 @@ const client = {
             error: state.queryError,
           }),
       }),
+      /**
+       * Chainable, awaitable no-op write.
+       *
+       * Without this, `await from(...).update(...).eq(...).eq(...)` threw, and
+       * any caller that persists after a successful call silently landed in
+       * its error path — which made "successful response" tests pass for the
+       * wrong reason.
+       */
+      update: () => {
+        const chain: Record<string, unknown> = {}
+        chain.eq = () => chain
+        chain.then = (
+          resolve: (v: { data: null; error: null }) => unknown,
+        ) => Promise.resolve({ data: null, error: null }).then(resolve)
+        return chain
+      },
     }
   },
 }

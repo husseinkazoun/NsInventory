@@ -426,19 +426,43 @@ export default function ScanStart() {
             {isSupabaseConfigured ? ' from scan-process.' : ' (demo fixture).'}
           </p>
 
-          {extracted?.usedOfflineMock && (
+          {/*
+            Shown whenever the values are fabricated — including when the
+            function responded perfectly well. No image AI exists yet, so a
+            successful call must not read as a successful analysis.
+          */}
+          {extracted?.simulated && (
             <div
               role="status"
-              className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+              data-testid="simulated-notice"
+              className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"
             >
               <AlertTriangle
                 className="h-4 w-4 shrink-0 text-amber-600"
                 aria-hidden="true"
               />
               <span>
-                <strong>Using offline mock.</strong> The scan-process function was
-                unreachable. Results below are placeholder data — re-run the scan
-                to retry.
+                <strong>Simulated analysis — no image AI was used.</strong> The
+                values below are fixed placeholders and are not derived from
+                your photo. They are safe to review but must not be treated as
+                a real inspection result.
+              </span>
+            </div>
+          )}
+
+          {extracted?.usedOfflineMock && (
+            <div
+              role="status"
+              data-testid="offline-notice"
+              className="mt-2 flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600"
+            >
+              <AlertTriangle
+                className="h-4 w-4 shrink-0 text-slate-400"
+                aria-hidden="true"
+              />
+              <span>
+                The scan-process function was unreachable, so this came from the
+                local fallback rather than the server. Re-run the scan to retry.
               </span>
             </div>
           )}
@@ -463,9 +487,19 @@ export default function ScanStart() {
                   <span className="text-slate-500">{f.label}</span>
                   <span className="flex items-center gap-3">
                     <span className="font-medium text-ns-navy">{f.value}</span>
-                    <Badge tone={confidenceTone(f.confidence)}>
-                      {Math.round(f.confidence * 100)}%
-                    </Badge>
+                    {/* A fabricated score while extraction is simulated —
+                        labelled so it is never read as measured confidence. */}
+                    <span
+                      title={
+                        extracted.simulated
+                          ? 'Simulated score — not a measured confidence'
+                          : 'Extraction confidence'
+                      }
+                    >
+                      <Badge tone={confidenceTone(f.confidence)}>
+                        {Math.round(f.confidence * 100)}%
+                      </Badge>
+                    </span>
                   </span>
                 </div>
               ))}

@@ -33,6 +33,51 @@ export type ExtractedResults = {
 export type ProcessResponse = ExtractedResults & {
   confidence: number
   usedOfflineMock?: boolean
+  /**
+   * True when the values were fabricated rather than derived from the image.
+   * The Edge Function sets it; the offline fallback is simulated by
+   * definition. The UI must say so plainly whenever it is true.
+   */
+  simulated?: boolean
+}
+
+/**
+ * The Edge Function refused the caller (401/403).
+ *
+ * Distinct from "the function is unavailable": a refusal is a real answer and
+ * must never be papered over with simulated output.
+ */
+export class ScanAuthorizationError extends Error {
+  readonly status: number
+  constructor(status: number) {
+    super(
+      status === 401
+        ? 'Your session is no longer valid. Please sign in again.'
+        : 'You do not have permission to run a scan in this organization.',
+    )
+    this.name = 'ScanAuthorizationError'
+    this.status = status
+  }
+}
+
+/** HTTP status carried by a FunctionsHttpError, when there is one. */
+function functionErrorStatus(err: unknown): number | null {
+  const context = (err as { context?: { status?: unknown } } | null)?.context
+  const status = context?.status
+  return typeof status === 'number' ? status : null
+}
+
+/**
+ * Tag for an asset created by an intake scan.
+ *
+ * Derived from the scan session, so a retry of the same session produces the
+ * same tag rather than a second asset. A constant tag used to collide with
+ * `unique (organization_id, tag)` on the second intake scan in any
+ * organization.
+ */
+export function intakeTagForSession(scanSessionId: string): string {
+  const compact = scanSessionId.replace(/-/g, '').toUpperCase()
+  return `LA-${compact.slice(0, 12)}`
 }
 
 // ── Demo-mode + Edge-Function-down fallback fixtures ──────────────────
@@ -40,6 +85,7 @@ export type ProcessResponse = ExtractedResults & {
 // so the React UI looks identical in either mode.
 const offlineMock: Record<ScanType, ProcessResponse> = {
   intake: {
+    simulated: true,
     confidence: 0.865,
     fields: [
       { label: 'Manufacturer', value: 'Eppendorf',  confidence: 0.94 },
@@ -49,14 +95,15 @@ const offlineMock: Record<ScanType, ProcessResponse> = {
     ],
     detected_condition: 'good',
     suggested_lab_asset: {
-      tag: 'LA-INTAKE',
-      name: 'Centrifuge (intake-detected)',
+      // No constant tag — see intakeTagForSession().
+      name: 'Centrifuge (simulated intake)',
       manufacturer: 'Eppendorf',
       model: 'MX-9',
       serial: '87XJ-3401K',
     },
   },
   condition: {
+    simulated: true,
     confidence: 0.835,
     fields: [
       { label: 'Visible wear',      value: 'Moderate',           confidence: 0.81 },
@@ -67,6 +114,7 @@ const offlineMock: Record<ScanType, ProcessResponse> = {
     detected_condition: 'good',
   },
   missing: {
+    simulated: true,
     confidence: 0.94,
     fields: [
       { label: 'Components expected', value: '7', confidence: 1.0 },
@@ -186,6 +234,9 @@ export async function processScanPhoto(input: {
 
     const extracted = data.extracted ?? {}
     const response: ProcessResponse = {
+      // Absent marker is treated as simulated: fail toward honesty, so a
+      // future real provider must opt IN to claiming its output is genuine.
+      simulated: data.simulated !== false,
       confidence: typeof data.confidence === 'number' ? data.confidence : 0,
       fields: extracted.fields,
       detected_condition: extracted.detected_condition ?? null,
@@ -211,6 +262,15 @@ export async function processScanPhoto(input: {
     // masking it with mock output would hide the real problem. Re-throw so the
     // session-expiry path (sign out + redirect to /login) runs.
     if (isAuthExpiryError(err)) throw asAppError(err)
+
+    // Likewise a refusal. 401 means the credential was rejected; 403 means the
+    // caller is not allowed to scan here — a viewer, or another organization's
+    // session. Both are real answers, and showing fabricated results instead
+    // would tell the user their scan worked when the server declined it.
+    const status = functionErrorStatus(err)
+    if (status === 401 || status === 403) {
+      throw new ScanAuthorizationError(status)
+    }
 
     // Edge Function unreachable / errored — fall back to the offline mock
     // and surface a warning in the UI so users know it's a placeholder.
@@ -250,27 +310,56 @@ export async function completeScanSession(input: {
   const organizationId = await resolveCurrentOrgId()
   let labAssetId = input.labAssetId ?? null
 
+  // Retry safety, step 1: if this session already produced an asset, reuse it.
+  // Completing the same session twice — a double click, or a retry after the
+  // missing-components insert failed — must not create a second asset.
+  if (!labAssetId) {
+    const { data: existingSession } = await supabase
+      .from('scan_sessions')
+      .select('lab_asset_id')
+      .eq('id', input.scanSessionId)
+      .eq('organization_id', organizationId)
+      .maybeSingle()
+    if (existingSession?.lab_asset_id) {
+      labAssetId = existingSession.lab_asset_id as string
+    }
+  }
+
   // Intake: auto-create a lab_assets row from the suggested fields.
   if (input.scanType === 'intake' && !labAssetId) {
     const sug = input.extracted.suggested_lab_asset
-    const tag =
-      sug?.tag && sug.tag.trim().length > 0
-        ? sug.tag.trim().toUpperCase()
-        : `LA-${Math.random().toString(36).slice(2, 8).toUpperCase()}`
+    // Derived from the session, so a retry computes the same tag rather than
+    // a new random one. Any tag the extractor suggests is ignored: a constant
+    // suggestion collided with unique (organization_id, tag).
+    const tag = intakeTagForSession(input.scanSessionId)
     const name = sug?.name?.trim() || sug?.model?.trim() || 'Untitled asset'
     const condition: AssetCondition =
       input.extracted.detected_condition ?? 'good'
 
-    const created = await createLabAsset({
-      name,
-      tag,
-      manufacturer: sug?.manufacturer,
-      model: sug?.model,
-      serial: sug?.serial,
-      condition,
-      status: 'active',
-    })
-    labAssetId = created.id
+    // Retry safety, step 2: if the row already exists under that tag — a
+    // retry that got far enough to insert last time — adopt it instead of
+    // failing on the unique constraint.
+    const { data: existingAsset } = await supabase
+      .from('lab_assets')
+      .select('id')
+      .eq('organization_id', organizationId)
+      .eq('tag', tag)
+      .maybeSingle()
+
+    if (existingAsset?.id) {
+      labAssetId = existingAsset.id as string
+    } else {
+      const created = await createLabAsset({
+        name,
+        tag,
+        manufacturer: sug?.manufacturer,
+        model: sug?.model,
+        serial: sug?.serial,
+        condition,
+        status: 'active',
+      })
+      labAssetId = created.id
+    }
   }
 
   // Missing-components scan: bulk-insert findings linked to the asset.

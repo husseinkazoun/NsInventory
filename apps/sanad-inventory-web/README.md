@@ -219,7 +219,18 @@ RLS on `storage.objects` parses the leading 36-character UUID via `public.scan_o
 
 Source: `supabase/functions/scan-process/index.ts` (Deno; lives outside the React TS build).
 
-Right now it returns deterministic mock JSON keyed by scan type — **no real AI provider is connected**. The TODO at the top of the file marks where to plug in a vision provider (OpenAI / Anthropic Claude Vision / Gemini / etc.).
+It returns deterministic, fabricated JSON keyed by scan type — **no real AI provider is connected and no image is ever read**. Every successful response carries `simulated: true` and a `simulation_notice`, and the UI shows a persistent *"Simulated analysis — no image AI was used"* banner even when the call succeeds, so a working deployment is never mistaken for a working analysis.
+
+Security, following the current Supabase "Securing Edge Functions" guidance:
+
+- `createSupabaseContext(req, { auth: 'user' })` validates the caller's JWT and yields a client scoped to them, so **RLS enforces tenancy**. A service-role client is never used for authorization — with RLS bypassed, a cross-organization identifier would simply resolve and the check would pass.
+- `verify_jwt = true` is pinned for this function in `config.toml`. Do **not** deploy with `--no-verify-jwt`.
+- The handler verifies the `scan_sessions` and `photo_scans` rows exist and share one organization, that `image_path` names that same organization *and* session, and that any `lab_asset_id` belongs to it. Role must be `owner`, `admin` or `member`; **`viewer` gets 403**.
+- `scan_type`, UUIDs, `image_path` shape and body size are strictly validated; every rejection returns one generic message that names no field or value.
+- CORS is an allowlist (`ALLOWED_ORIGINS`, defaulting to local + the Pages origin) with `Vary: Origin`; an unlisted origin receives no `Access-Control-Allow-Origin`.
+- Nothing is logged — no tokens, image bytes, or identifiers.
+
+`handler.ts` holds the logic and takes its dependencies as arguments, so `deno test supabase/functions/scan-process/handler_test.ts` runs 31 tests without a server or network. `index.ts` is the thin entry that supplies the real context factory.
 
 Deploy when ready:
 
@@ -227,7 +238,7 @@ Deploy when ready:
 supabase functions deploy scan-process
 ```
 
-If the function is **unreachable** at runtime, the React app falls back to the same offline-mock payload and surfaces a yellow "Using offline mock" banner above the review results. The `photo_scans` row is marked `failed` with the error message so the issue is traceable.
+If the function is **unreachable** at runtime, the React app falls back to the same offline payload and says so. A **401 or 403 is never converted into a fallback** — a refusal is a real answer, and showing fabricated results would tell the user their scan succeeded when the server declined it. Only genuine unavailability (network failure, 5xx) uses the fallback.
 
 ### What's still mocked after this commit
 

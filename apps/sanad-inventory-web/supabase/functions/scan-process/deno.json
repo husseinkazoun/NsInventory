@@ -1,0 +1,7 @@
+{
+  "//": "Scoped to this function so Deno does not walk up to the app's package.json and lock unrelated workspace dependencies (React, Vite, Vitest...). Lockfile disabled: the function pins its own npm specifiers inline and `supabase functions deploy` does not consume a lock.",
+  "lock": false,
+  "tasks": {
+    "test": "deno test --allow-none handler_test.ts"
+  }
+}

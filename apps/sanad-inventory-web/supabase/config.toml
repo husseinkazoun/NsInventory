@@ -25,3 +25,11 @@ max_rows = 1000
 [auth]
 enable_signup = false
 enable_anonymous_sign_ins = false
+
+# Photo Scan endpoint. `verify_jwt = true` is the platform default, stated
+# explicitly because the function's auth pattern depends on it: the platform
+# rejects requests without a valid user JWT before the handler runs, and the
+# handler then decides what that authenticated caller may reach. Do not deploy
+# this function with --no-verify-jwt.
+[functions.scan-process]
+verify_jwt = true
