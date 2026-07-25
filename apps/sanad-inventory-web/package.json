@@ -10,7 +10,10 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "staging:bootstrap": "node supabase/staging/bootstrap.mjs",
+    "staging:teardown": "node supabase/staging/teardown.mjs",
+    "test:db": "./supabase/tests/run.sh"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.4",

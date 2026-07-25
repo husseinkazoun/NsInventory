@@ -135,6 +135,18 @@ They return a **set of organization ids** rather than taking an id and returning
 
 Frontend role checks (`src/lib/permissions.ts`, `RequireWrite`) hide actions a role cannot perform. They are UX only — the database refuses the write either way.
 
+### Staging
+
+`supabase/staging/` is a reusable bootstrap package for a **separate** Supabase staging project: four fake role accounts created through the Auth Admin API, one clearly-named staging organization, minimal representative data, and a narrowly-scoped teardown. It is dry-run by default and refuses to run unless you name the target project explicitly and confirm intent.
+
+```bash
+npm run staging:bootstrap             # dry run
+npm run staging:bootstrap -- --apply
+npm run staging:teardown -- --apply
+```
+
+Full walkthrough — project creation, Auth settings, migration order, verification per role, advisor re-run — in [`supabase/staging/README.md`](./supabase/staging/README.md). The service-role key is read from the environment and never committed.
+
 ### Database tests
 
 ```bash

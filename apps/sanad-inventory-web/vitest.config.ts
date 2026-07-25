@@ -9,7 +9,7 @@ export default defineConfig({
     environment: 'jsdom',
     // No `globals: true` — the tests import describe/it/expect explicitly, so
     // `tsc --noEmit` typechecks them without extra ambient type config.
-    include: ['src/**/*.test.{ts,tsx}'],
+    include: ['src/**/*.test.{ts,tsx}', 'supabase/staging/**/*.test.mjs'],
     setupFiles: ['src/test/setup.ts'],
     restoreMocks: true,
   },
