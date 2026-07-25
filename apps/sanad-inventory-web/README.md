@@ -150,7 +150,7 @@ Full walkthrough — project creation, Auth settings, migration order, verificat
 ### Database tests
 
 ```bash
-./supabase/tests/run.sh    # 84 assertions
+./supabase/tests/run.sh    # 92 assertions   (also: npm run test:db)
 ```
 
 Stands up a throwaway Postgres 17 cluster, applies `00_supabase_bootstrap.sql` (local-only scaffolding for `auth.uid()`, `storage.objects` and the API roles) followed by the real migrations, then exercises the policies as `authenticated`/`anon` with a `request.jwt.claims` GUC — the same mechanism PostgREST uses. Docker is not required; a local Postgres server is (`brew install postgresql@17`). If none is found the script exits 2 and reports SKIP rather than passing.
@@ -164,7 +164,7 @@ npm test          # vitest run
 npm run test:watch
 ```
 
-Vitest + jsdom + Testing Library. 42 tests across `src/lib/org.test.ts` (resolver), `src/lib/session.test.tsx` (expiry, notice, redirect), `src/lib/permissions.test.ts` (role capability matrix) and `src/test/webStorage.test.ts` (Storage conformance). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
+Vitest + jsdom + Testing Library. 72 tests across `src/lib/org.test.ts` (resolver), `src/lib/session.test.tsx` (expiry, notice, redirect), `src/lib/permissions.test.ts` (role capability matrix), `src/test/webStorage.test.ts` (Storage conformance) and `supabase/staging/plan.test.mjs` (staging bootstrap plan and guards). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
 
 Verified on Node 20.20.2, 22.22.1, 24.14.0 and 25.9.0.
 

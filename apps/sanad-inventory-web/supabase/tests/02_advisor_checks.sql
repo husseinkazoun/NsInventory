@@ -67,12 +67,32 @@ select test.assert(
   )
 );
 
+-- The property the advisor actually tests is reachability, not existence.
+-- `public.rls_auto_enable()` is platform-managed and cannot be moved out of
+-- `public`, so the invariant is that nothing SECURITY DEFINER in `public` is
+-- callable by an API role.
 select test.assert(
-  'advisor: no SECURITY DEFINER function remains in public',
+  'advisor: no SECURITY DEFINER function in public is reachable by anon or authenticated',
   not exists (
     select 1 from pg_proc p
     join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public' and p.prosecdef
+    where n.nspname = 'public'
+      and p.prosecdef
+      and (has_function_privilege('anon', p.oid, 'execute')
+        or has_function_privilege('authenticated', p.oid, 'execute'))
+  )
+);
+
+-- Separately: no *application* SECURITY DEFINER function belongs in `public`.
+-- Ours live in `private`; only the Supabase-managed one is permitted here.
+select test.assert(
+  'advisor: the only SECURITY DEFINER function in public is the platform one',
+  not exists (
+    select 1 from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.prosecdef
+      and p.proname <> 'rls_auto_enable'
   )
 );
 
@@ -186,4 +206,81 @@ select test.assert(
     where schemaname in ('public', 'storage')
       and ('anon' = any(roles) or 'public' = any(roles))
   )
+);
+
+-- ── anon/authenticated_security_definer_function_executable ───────────
+-- Both advisor findings concern public.rls_auto_enable(). The hardening
+-- migration revokes the ambient EXECUTE; these assert it took effect AND that
+-- the automatic-RLS behaviour it backs still works.
+select test.assert(
+  'advisor: anon cannot execute public.rls_auto_enable()',
+  not has_function_privilege('anon', 'public.rls_auto_enable()', 'execute')
+);
+
+select test.assert(
+  'advisor: authenticated cannot execute public.rls_auto_enable()',
+  not has_function_privilege('authenticated', 'public.rls_auto_enable()', 'execute')
+);
+
+-- proacl NULL means "default privileges", which for a function is PUBLIC
+-- EXECUTE — exactly the state the advisor flags. After the revoke the ACL is
+-- explicit and must not mention PUBLIC (an entry starting with '=').
+select test.assert(
+  'advisor: rls_auto_enable ACL no longer grants PUBLIC',
+  (
+    select p.proacl is not null
+       and not exists (
+         select 1 from unnest(p.proacl) a where a::text like '=%'
+       )
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public' and p.proname = 'rls_auto_enable'
+  )
+);
+
+select test.assert(
+  'advisor: function owner retains EXECUTE',
+  (
+    select has_function_privilege(pg_get_userbyid(p.proowner), p.oid, 'execute')
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public' and p.proname = 'rls_auto_enable'
+  )
+);
+
+select test.assert(
+  'advisor: ensure_rls event trigger still exists and is enabled',
+  exists (
+    select 1 from pg_event_trigger et
+    join pg_proc p on p.oid = et.evtfoid
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.proname = 'rls_auto_enable'
+      and et.evtevent = 'ddl_command_end'
+      and et.evtenabled <> 'D'
+  )
+);
+
+-- Functional proof, not just a privilege check: create a table AFTER the
+-- revoke and confirm the event trigger still switched RLS on. Postgres checks
+-- EXECUTE when a function is *called*; an event-trigger function is invoked by
+-- the system during DDL, so revoking EXECUTE cannot stop it. This asserts that
+-- rather than assuming it.
+create table if not exists public.rls_auto_enable_probe (id integer);
+
+select test.assert(
+  'behaviour: automatic RLS still enabled on a newly created public table',
+  (
+    select c.relrowsecurity
+      from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'public' and c.relname = 'rls_auto_enable_probe'
+  )
+);
+
+drop table if exists public.rls_auto_enable_probe;
+
+select test.assert(
+  'behaviour: probe table cleaned up',
+  to_regclass('public.rls_auto_enable_probe') is null
 );

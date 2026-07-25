@@ -203,11 +203,19 @@ Expect these to have cleared, compared with the pre-migration baseline:
   `public.is_org_member` (the function is dropped)
 - all four `auth_rls_initplan` warnings
 
+Also cleared, once `20260725175154_harden_rls_auto_enable.sql` is applied:
+
+- `anon_security_definer_function_executable` and
+  `authenticated_security_definer_function_executable` for
+  `public.rls_auto_enable` — Supabase's own `ensure_rls` event-trigger
+  function. Exploitability was limited (it returns `event_trigger`, which
+  PostgREST cannot expose), but the ambient PUBLIC EXECUTE grant was real and
+  is now revoked. The event trigger keeps working: Postgres checks EXECUTE
+  when a function is *called*, and an event-trigger function is invoked by the
+  system during DDL.
+
 Expect these to **remain**, and they are not defects:
 
-- `anon_security_definer_function_executable` for `public.rls_auto_enable` —
-  Supabase's own `ensure_rls` event-trigger function. It returns
-  `event_trigger`, so it cannot actually be invoked over RPC.
 - `unindexed_foreign_keys` and `unused_index` (INFO) — out of scope here.
 - `auth_leaked_password_protection`, unless you enabled it in step 2.
 

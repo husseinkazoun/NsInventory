@@ -79,3 +79,41 @@ grant select on storage.objects to anon;
 grant all on storage.objects to service_role;
 grant select on storage.buckets to anon, authenticated;
 grant all on storage.buckets to service_role;
+
+-- ── Supabase's automatic-RLS event trigger ────────────────────────────
+-- Mirrors what the hosted platform installs (verified against the staging
+-- project: owner postgres, SECURITY DEFINER, search_path = pg_catalog, backing
+-- the `ensure_rls` event trigger on ddl_command_end). Recreated here so the
+-- hardening migration has something to act on and the tests can prove that
+-- revoking EXECUTE does not stop automatic RLS.
+create or replace function public.rls_auto_enable()
+returns event_trigger
+language plpgsql
+security definer
+set search_path to 'pg_catalog'
+as $function$
+DECLARE
+  cmd record;
+BEGIN
+  FOR cmd IN
+    SELECT *
+    FROM pg_event_trigger_ddl_commands()
+    WHERE command_tag IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO')
+      AND object_type IN ('table','partitioned table')
+  LOOP
+     IF cmd.schema_name IS NOT NULL AND cmd.schema_name IN ('public') AND cmd.schema_name NOT IN ('pg_catalog','information_schema') AND cmd.schema_name NOT LIKE 'pg_toast%' AND cmd.schema_name NOT LIKE 'pg_temp%' THEN
+      BEGIN
+        EXECUTE format('alter table if exists %s enable row level security', cmd.object_identity);
+      EXCEPTION
+        WHEN OTHERS THEN
+          RAISE LOG 'rls_auto_enable: failed to enable RLS on %', cmd.object_identity;
+      END;
+     END IF;
+  END LOOP;
+END;
+$function$;
+
+drop event trigger if exists ensure_rls;
+create event trigger ensure_rls
+  on ddl_command_end
+  execute function public.rls_auto_enable();
