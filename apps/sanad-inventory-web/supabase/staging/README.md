@@ -3,6 +3,14 @@
 How to stand up a **separate** Supabase staging project, apply the migrations,
 seed four role accounts, and verify the role matrix end to end.
 
+> **Requires Node.js 22 or newer.** Both scripts use `@supabase/supabase-js`,
+> whose realtime client needs a native `WebSocket` — Node gained that in 22,
+> and Supabase dropped Node 20 support for its client libraries on 2026-06-30.
+> Each script checks this before reading configuration or opening a
+> connection, so an old runtime fails with a version message rather than a
+> confusing `install the "ws" package` error from inside the client. Check
+> with `node -v`; switch with `nvm use 22` (or newer).
+
 > **Production is never a valid target.** These scripts refuse to run unless
 > you name the staging project explicitly *and* confirm intent. Put your
 > production project reference in `SUPABASE_PRODUCTION_PROJECT_REFS` locally
@@ -90,9 +98,19 @@ Confirm with `supabase migration list`.
 ## 6. Run the bootstrap
 
 ```bash
+node -v                               # must be v22 or newer
 npm run staging:bootstrap             # dry run — prints the plan, writes nothing
 npm run staging:bootstrap -- --apply  # actually writes
 ```
+
+If the runtime is too old, both scripts stop immediately with:
+
+```
+✖ Node.js 22 or newer is required — found v20.20.2.
+```
+
+Nothing is read from the environment and no connection is opened before that
+check runs.
 
 It creates, in this order (forced by the foreign keys):
 
@@ -225,6 +243,8 @@ Expect these to **remain**, and they are not defects:
 npm run staging:teardown             # dry run
 npm run staging:teardown -- --apply  # actually deletes
 ```
+
+Same Node 22+ requirement as the bootstrap, checked the same way.
 
 Scope is narrow by construction: rows only where
 `organization_id = 5ada0000-0000-4000-8000-000000000001`, Auth users only where

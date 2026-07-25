@@ -44,7 +44,7 @@ Legend: ✅ complete · 🟡 partial · ❌ absent · — not applicable
 | **Public API** | ✅ `GET /api/products` with whitelisted fields | — | Decide whether to preserve |
 | **CSV export** | ✅ Clothing export, 23 columns, UTF-8 BOM for Arabic | ❌ | Port |
 | **Branding / icons** | ✅ | ✅ Copied from root `public/icons/` | Parity |
-| **Tests** | ✅ 69 tests, 209 assertions (per `CLAUDE.md`; not re-run for this branch — no PHP was touched, and PHPUnit is not installed in this checkout) | 🟡 72 Vitest tests (resolver, session expiry, role matrix, Storage, staging plan) + 92 SQL authorization/advisor assertions against a local Postgres 17 cluster; product/order/clothing modules untested | Extend coverage as modules are ported |
+| **Tests** | ✅ 69 tests, 209 assertions (per `CLAUDE.md`; not re-run for this branch — no PHP was touched, and PHPUnit is not installed in this checkout) | 🟡 84 Vitest tests (resolver, session expiry, role matrix, Storage, staging plan, Node preflight) + 92 SQL authorization/advisor assertions against a local Postgres 17 cluster; product/order/clothing modules untested | Extend coverage as modules are ported |
 
 ---
 

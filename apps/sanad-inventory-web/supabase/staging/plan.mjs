@@ -135,6 +135,64 @@ export function buildStagingFixtures() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Runtime requirement
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Minimum Node major version for the staging scripts.
+ *
+ * Both runners use `@supabase/supabase-js`, whose realtime client requires a
+ * native `WebSocket`. Node gained that in 22; on Node 20 the client throws at
+ * `createClient()` with a message about installing the `ws` package, which
+ * gives no hint that the real problem is the runtime version. Supabase also
+ * dropped Node 20 support for its client libraries on 2026-06-30.
+ *
+ * Checking here means the failure is reported before any configuration is
+ * read and before any network call is made.
+ */
+export const MIN_NODE_MAJOR = 22
+
+export class NodeVersionError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'NodeVersionError'
+  }
+}
+
+/** Extracts the major version from a string like `v22.22.1`. */
+export function parseNodeMajor(version) {
+  const match = /^v?(\d+)\./.exec(String(version ?? '').trim())
+  return match ? Number(match[1]) : null
+}
+
+/**
+ * Throws unless the runtime is new enough. Pure: takes the version string, so
+ * every branch is testable without spawning another Node.
+ */
+export function assertSupportedNode(version = process.version) {
+  const major = parseNodeMajor(version)
+
+  if (major === null) {
+    throw new NodeVersionError(
+      `Could not determine the Node.js version (saw "${version}"). ` +
+        `Node.js ${MIN_NODE_MAJOR} or newer is required.`,
+    )
+  }
+
+  if (major < MIN_NODE_MAJOR) {
+    throw new NodeVersionError(
+      `Node.js ${MIN_NODE_MAJOR} or newer is required — found ${version}.\n` +
+        `  The Supabase JavaScript client needs native WebSocket support, which\n` +
+        `  Node ${major} does not provide, and Supabase dropped Node 20 support for\n` +
+        `  its client libraries on 2026-06-30.\n` +
+        `  Switch runtime, e.g.  nvm use ${MIN_NODE_MAJOR}  (or newer), then re-run.`,
+    )
+  }
+
+  return major
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Safety guards
 // ─────────────────────────────────────────────────────────────────────────
 

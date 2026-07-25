@@ -20,6 +20,7 @@ import {
   STAGING_IDS,
   STORAGE_BUCKET,
   TEARDOWN_TABLE_ORDER,
+  assertSupportedNode,
   buildStagingAccounts,
   isStagingEmail,
   readConfig,
@@ -48,6 +49,15 @@ async function listAllUsers(admin) {
 }
 
 async function main() {
+  // Runtime check first: before configuration is read and before any
+  // network call, so an unsupported Node fails with a version message
+  // rather than a confusing WebSocket error from deep inside the client.
+  try {
+    assertSupportedNode()
+  } catch (err) {
+    fail(err.message)
+  }
+
   let config
   try {
     config = readConfig(process.env)
