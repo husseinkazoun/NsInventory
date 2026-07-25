@@ -164,9 +164,9 @@ npm test          # vitest run
 npm run test:watch
 ```
 
-Vitest + jsdom + Testing Library. 95 tests across `src/lib/org.test.ts` (resolver), `src/lib/session.test.tsx` (expiry, notice, redirect), `src/lib/permissions.test.ts` (role capability matrix), `src/test/webStorage.test.ts` (Storage conformance) `supabase/staging/plan.test.mjs` (staging bootstrap plan and guards) and `supabase/staging/nodeVersion.test.mjs` (Node 22+ preflight, including real subprocess runs on an older runtime) and `src/pages/Login.test.tsx` (the first-sign-in redirect race). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
+Vitest + jsdom + Testing Library. 125 tests across `src/lib/org.test.ts` (resolver), `src/lib/session.test.tsx` (expiry, notice, redirect), `src/lib/permissions.test.ts` (role capability matrix), `src/lib/queries/scans.test.ts` (the `scan-process` fallback contract — refusals, 5xx-vs-other-4xx, malformed responses, persistence failures, and the simulation marker), `src/test/webStorage.test.ts` (Storage conformance) `supabase/staging/plan.test.mjs` (staging bootstrap plan and guards) and `supabase/staging/nodeVersion.test.mjs` (Node 22+ preflight, including real subprocess runs on an older runtime) and `src/pages/Login.test.tsx` (the first-sign-in redirect race). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
 
-Verified on Node 20.20.2, 22.22.1, 24.14.0 and 25.9.0.
+Verified on Node 22.22.1, 24.14.0 and 25.9.0. On Node 20 the staging `nodeVersion.test.mjs` preflight cases fail by design — commit `95066ad` requires Node 22 for the staging scripts, and those cases assert that gate — while the rest of the suite passes (122/125).
 
 ### Node's built-in Web Storage
 
@@ -230,15 +230,41 @@ Security, following the current Supabase "Securing Edge Functions" guidance:
 - CORS is an allowlist (`ALLOWED_ORIGINS`, defaulting to local + the Pages origin) with `Vary: Origin`; an unlisted origin receives no `Access-Control-Allow-Origin`.
 - Nothing is logged — no tokens, image bytes, or identifiers.
 
-`handler.ts` holds the logic and takes its dependencies as arguments, so `deno test supabase/functions/scan-process/handler_test.ts` runs 31 tests without a server or network. `index.ts` is the thin entry that supplies the real context factory.
+`handler.ts` holds the logic and takes its dependencies as arguments, so the tests run 31 cases without a server or network. `index.ts` is the thin entry that supplies the real context factory.
 
-Deploy when ready:
+**Dependencies and tasks.** The function has its own `deno.json`, isolated from the app's npm workspace:
+
+- `"nodeModulesDir": "none"` — Deno never creates a `node_modules` and never walks up to the app's `package.json` (React, Vite, Vitest, Tailwind).
+- `@supabase/server` is pinned to the exact reviewed version **`1.4.1`** through the import map (`"@supabase/server": "npm:@supabase/server@1.4.1"`); `index.ts` imports the mapped bare specifier, not a floating `npm:@supabase/server`.
+- `deno.lock` is committed and records the full resolution (it pulls a transitive `@supabase/supabase-js@2.110.8`). The `test` and `check` tasks run with `--frozen`, so a drifted lock fails the task instead of being silently rewritten. `--frozen` is at the task level, not global, so it does not interfere with `supabase functions deploy`.
+
+Run from `supabase/functions/scan-process/`:
+
+```bash
+deno task test     # deno test --frozen handler_test.ts   (31 tests)
+deno task check    # deno check --frozen index.ts handler_test.ts
+```
+
+Deploy when ready — do **not** pass `--no-verify-jwt`:
 
 ```bash
 supabase functions deploy scan-process
 ```
 
-If the function is **unreachable** at runtime, the React app falls back to the same offline payload and says so. A **401 or 403 is never converted into a fallback** — a refusal is a real answer, and showing fabricated results would tell the user their scan succeeded when the server declined it. Only genuine unavailability (network failure, 5xx) uses the fallback.
+**Client fallback contract.** The React client (`processScanPhoto`) treats each outcome distinctly. The offline mock is only ever substituted for genuine unavailability — a refusal or a bad request is surfaced, because telling a user their scan succeeded when it did not is worse than an error. The classification uses the `@supabase/supabase-js` error classes:
+
+| Invocation outcome | Client behaviour |
+|---|---|
+| `FunctionsFetchError` (network failure) | **Offline mock** (`usedOfflineMock: true`), failure recorded on the row |
+| `FunctionsRelayError` (relay failure) | **Offline mock** |
+| `FunctionsHttpError`, status **500–599** | **Offline mock** |
+| `FunctionsHttpError`, status **401** | Throws `ScanAuthorizationError` (session no longer valid) |
+| `FunctionsHttpError`, status **403** | Throws `ScanAuthorizationError` (not permitted here) |
+| `FunctionsHttpError`, any other 4xx (**400, 404, 405, 413, 422, 429**, …) | **Surfaced** — the original error is thrown, never the mock |
+| 2xx with an empty or malformed body (not an object, or `extracted` not an object) | Throws `MalformedScanResponseError` |
+| 2xx parsed, but the follow-up `photo_scans` update fails | **Surfaced** — the database error is thrown. A persistence failure after a successful analysis is not a function outage, so it never triggers the fallback |
+
+The Edge Function invocation and the `photo_scans` persistence are handled in separate phases; only the invocation phase can reach the fallback.
 
 ### What's still mocked after this commit
 

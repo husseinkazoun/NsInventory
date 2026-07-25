@@ -25,8 +25,11 @@
 // Deploy: supabase functions deploy scan-process
 //         (do NOT pass --no-verify-jwt)
 
-// @ts-nocheck — Deno/npm specifiers are not resolved by the Vite TS build.
-import { createSupabaseContext } from 'npm:@supabase/server'
+// The npm specifier is pinned in deno.json's import map (@supabase/server ->
+// npm:@supabase/server@1.4.1) and recorded in deno.lock, so `deno check` and
+// `deno test` resolve and type-check this file. This function lives outside the
+// Vite/tsc build (tsconfig `include` is `src` only), which never sees it.
+import { createSupabaseContext } from '@supabase/server'
 import { handleScanProcess, type CallerContext } from './handler.ts'
 
 /**
@@ -55,13 +58,22 @@ async function createContext(req: Request): Promise<CallerContext | null> {
   const { data, error } = await createSupabaseContext(req, { auth: 'user' })
   if (error || !data) return null
 
-  const userId = data.userClaims?.sub ?? data.userClaims?.id
+  // `UserClaims.id` is the normalized user id — @supabase/server derives it as
+  // `jwtClaims.sub`, so it equals the JWT subject by construction. (The former
+  // `?? data.userClaims?.sub` first operand was always undefined: the
+  // normalized claims object has no `sub` field. @ts-nocheck had hidden that.)
+  const userId = data.userClaims?.id
   if (!userId) return null
 
   // `data.supabase` is scoped to the caller, so RLS governs every read the
   // handler performs. `data.supabaseAdmin` is deliberately not passed through:
-  // authorization decisions must never be made with RLS bypassed.
-  return { supabase: data.supabase, userId }
+  // authorization decisions must never be made with RLS bypassed. The cast
+  // narrows the full SupabaseClient generic to the minimal surface the handler
+  // uses; without it tsc reports "type instantiation is excessively deep".
+  return {
+    supabase: data.supabase as unknown as CallerContext['supabase'],
+    userId,
+  }
 }
 
 Deno.serve((req: Request) =>

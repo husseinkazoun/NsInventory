@@ -1,3 +1,8 @@
+import {
+  FunctionsFetchError,
+  FunctionsHttpError,
+  FunctionsRelayError,
+} from '@supabase/supabase-js'
 import { currentUserId, supabase } from '../supabaseClient'
 import { asAppError, isAuthExpiryError, resolveCurrentOrgId } from '../org'
 import { createLabAsset } from './labAssets'
@@ -60,11 +65,85 @@ export class ScanAuthorizationError extends Error {
   }
 }
 
-/** HTTP status carried by a FunctionsHttpError, when there is one. */
-function functionErrorStatus(err: unknown): number | null {
-  const context = (err as { context?: { status?: unknown } } | null)?.context
-  const status = context?.status
-  return typeof status === 'number' ? status : null
+/**
+ * The Edge Function answered 2xx but the body was empty or not the shape the
+ * client expects.
+ *
+ * Surfaced, never swallowed. Substituting the offline mock for an unusable
+ * response would tell the user their image was analysed when nothing usable
+ * actually came back.
+ */
+export class MalformedScanResponseError extends Error {
+  constructor() {
+    super('The scan service returned an unexpected response.')
+    this.name = 'MalformedScanResponseError'
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * What a failed `scan-process` invocation should become.
+ *
+ * `fallback` is reserved for genuine unavailability — a network failure, a
+ * relay failure, or an HTTP 5xx. `auth` is a refusal (401/403), a real answer.
+ * `surface` is every other 4xx (400/404/405/413/422/429…) and anything
+ * unrecognised, including a malformed 2xx body: those are surfaced rather than
+ * papered over with fabricated output.
+ */
+type InvokeDisposition =
+  | { kind: 'auth'; status: 401 | 403 }
+  | { kind: 'fallback' }
+  | { kind: 'surface' }
+
+function classifyInvokeError(err: unknown): InvokeDisposition {
+  // The function returned a non-2xx status. The status decides everything.
+  if (err instanceof FunctionsHttpError) {
+    const status = (err.context as { status?: unknown } | undefined)?.status
+    if (status === 401 || status === 403) return { kind: 'auth', status }
+    if (typeof status === 'number' && status >= 500 && status <= 599) {
+      return { kind: 'fallback' }
+    }
+    // 400, 404, 405, 413, 422, 429, … — a definite answer, not an outage.
+    return { kind: 'surface' }
+  }
+  // The request never produced a response: the function is unreachable.
+  if (err instanceof FunctionsFetchError) return { kind: 'fallback' }
+  if (err instanceof FunctionsRelayError) return { kind: 'fallback' }
+  // MalformedScanResponseError, or anything unrecognised, surfaces.
+  return { kind: 'surface' }
+}
+
+/**
+ * Turns a *successful* Edge Function body into a ProcessResponse, or throws
+ * MalformedScanResponseError. An empty or malformed 2xx body is a hard error:
+ * it must never silently become a simulated scan.
+ */
+function parseScanResponse(data: unknown): {
+  response: ProcessResponse
+  extracted: Record<string, unknown>
+} {
+  if (!isPlainObject(data)) throw new MalformedScanResponseError()
+  const extracted = data.extracted
+  if (!isPlainObject(extracted)) throw new MalformedScanResponseError()
+
+  const response: ProcessResponse = {
+    // Absent marker is treated as simulated: fail toward honesty, so a future
+    // real provider must opt IN to claiming its output is genuine.
+    simulated: data.simulated !== false,
+    confidence: typeof data.confidence === 'number' ? data.confidence : 0,
+    fields: extracted.fields as ProcessResponse['fields'],
+    detected_condition:
+      (extracted.detected_condition as AssetCondition | null | undefined) ??
+      null,
+    missing_components:
+      extracted.missing_components as ProcessResponse['missing_components'],
+    suggested_lab_asset:
+      extracted.suggested_lab_asset as ProcessResponse['suggested_lab_asset'],
+  }
+  return { response, extracted }
 }
 
 /**
@@ -220,8 +299,58 @@ export async function processScanPhoto(input: {
     return offlineMock[input.scanType]
   }
 
+  // ── Phase 1: invoke the Edge Function ──
+  // Only genuine unavailability — a network failure, a relay failure, or an
+  // HTTP 5xx — is eligible for the offline fallback. A refusal (401/403), any
+  // other 4xx, and an empty or malformed 2xx body are all real answers, and
+  // must reach the caller rather than be replaced with fabricated results.
+  const outcome = await invokeScanProcess(supabase, input)
+  if (outcome.kind === 'fallback') return outcome.response
+
+  // ── Phase 2: persist the extracted payload onto the photo_scan row ──
+  // Deliberately OUTSIDE the invocation error handling above. A persistence
+  // failure after a successful analysis is not a function outage; it must
+  // never trigger the offline fallback. Its `error` is checked explicitly and
+  // surfaced.
+  const { error: persistError } = await supabase
+    .from('photo_scans')
+    .update({
+      processing_status: 'completed',
+      confidence: outcome.response.confidence,
+      extracted: outcome.extracted,
+      processed_at: new Date().toISOString(),
+    })
+    .eq('scan_session_id', input.scanSessionId)
+    .eq('image_path', input.imagePath)
+  if (persistError) throw asAppError(persistError)
+
+  return outcome.response
+}
+
+type ScanClient = NonNullable<typeof supabase>
+
+type InvokeOutcome =
+  | { kind: 'ok'; response: ProcessResponse; extracted: Record<string, unknown> }
+  | { kind: 'fallback'; response: ProcessResponse }
+
+/**
+ * Invokes `scan-process` and classifies the result. Returns the parsed
+ * response on success, or the offline mock when — and only when — the function
+ * is genuinely unavailable. Throws for a refusal (401/403), any other 4xx, an
+ * empty/malformed body, or an expired session; those must never become the
+ * offline mock.
+ */
+async function invokeScanProcess(
+  client: ScanClient,
+  input: {
+    scanSessionId: string
+    imagePath: string
+    scanType: ScanType
+    labAssetId?: string | null
+  },
+): Promise<InvokeOutcome> {
   try {
-    const { data, error } = await supabase.functions.invoke('scan-process', {
+    const { data, error } = await client.functions.invoke('scan-process', {
       body: {
         scan_type: input.scanType,
         scan_session_id: input.scanSessionId,
@@ -230,53 +359,36 @@ export async function processScanPhoto(input: {
       },
     })
     if (error) throw error
-    if (!data) throw new Error('Empty response from scan-process')
-
-    const extracted = data.extracted ?? {}
-    const response: ProcessResponse = {
-      // Absent marker is treated as simulated: fail toward honesty, so a
-      // future real provider must opt IN to claiming its output is genuine.
-      simulated: data.simulated !== false,
-      confidence: typeof data.confidence === 'number' ? data.confidence : 0,
-      fields: extracted.fields,
-      detected_condition: extracted.detected_condition ?? null,
-      missing_components: extracted.missing_components,
-      suggested_lab_asset: extracted.suggested_lab_asset,
-    }
-
-    // Persist extracted payload onto the photo_scan row.
-    await supabase
-      .from('photo_scans')
-      .update({
-        processing_status: 'completed',
-        confidence: response.confidence,
-        extracted,
-        processed_at: new Date().toISOString(),
-      })
-      .eq('scan_session_id', input.scanSessionId)
-      .eq('image_path', input.imagePath)
-
-    return response
+    const { response, extracted } = parseScanResponse(data)
+    return { kind: 'ok', response, extracted }
   } catch (err) {
-    // An expired credential is not an "Edge Function is down" condition —
-    // masking it with mock output would hide the real problem. Re-throw so the
-    // session-expiry path (sign out + redirect to /login) runs.
+    // An expired credential is not an outage — masking it with mock output
+    // would hide the real problem. Re-throw so the session-expiry path (sign
+    // out + redirect to /login) runs.
     if (isAuthExpiryError(err)) throw asAppError(err)
 
-    // Likewise a refusal. 401 means the credential was rejected; 403 means the
-    // caller is not allowed to scan here — a viewer, or another organization's
-    // session. Both are real answers, and showing fabricated results instead
-    // would tell the user their scan worked when the server declined it.
-    const status = functionErrorStatus(err)
-    if (status === 401 || status === 403) {
-      throw new ScanAuthorizationError(status)
+    const disposition = classifyInvokeError(err)
+
+    // 401 means the credential was rejected; 403 means the caller may not scan
+    // here — a viewer, or another organization's session. Both are real
+    // answers; showing fabricated results would claim the scan worked when the
+    // server declined it.
+    if (disposition.kind === 'auth') {
+      throw new ScanAuthorizationError(disposition.status)
     }
 
-    // Edge Function unreachable / errored — fall back to the offline mock
-    // and surface a warning in the UI so users know it's a placeholder.
+    // Every other 4xx, or an empty/malformed 2xx body. Surfacing beats
+    // silently returning fabricated data.
+    if (disposition.kind === 'surface') {
+      throw asAppError(err)
+    }
+
+    // Genuine unavailability — network failure, relay failure, or HTTP 5xx.
+    // Fall back to the offline mock and record the failure best-effort so the
+    // UI can warn that the result is a placeholder.
     const message = err instanceof Error ? err.message : String(err)
     try {
-      await supabase
+      await client
         .from('photo_scans')
         .update({
           processing_status: 'failed',
@@ -290,7 +402,10 @@ export async function processScanPhoto(input: {
       // best-effort; failing to record the failure shouldn't break UX
     }
 
-    return { ...offlineMock[input.scanType], usedOfflineMock: true }
+    return {
+      kind: 'fallback',
+      response: { ...offlineMock[input.scanType], usedOfflineMock: true },
+    }
   }
 }
 
