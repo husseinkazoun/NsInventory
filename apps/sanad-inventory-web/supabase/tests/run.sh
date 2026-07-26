@@ -97,6 +97,11 @@ run_sql "$HERE/01_authorization_test.sql"
 echo "==> running advisor-equivalent checks"
 run_sql "$HERE/02_advisor_checks.sql"
 
+# Runs last on purpose: it seeds lab_assets rows, and 01 asserts exact row
+# counts that new fixtures would otherwise break.
+echo "==> running garment authorization and backfill checks"
+run_sql "$HERE/03_garments_test.sql"
+
 echo
 psql -q -P pager=off -c "
   select name, expected, actual

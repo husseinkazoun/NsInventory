@@ -178,6 +178,10 @@ select test.assert(
   )
 );
 
+-- Count guard, deliberately exact: a new public table that nobody granted
+-- SELECT on would be invisible to the client, and a new table granted to the
+-- wrong role would be silently over-exposed. Either way this fails and the
+-- number has to be re-justified. 11 = the original 10 plus `garments`.
 select test.assert(
   'grants: authenticated can read every inventory table',
   (
@@ -186,7 +190,7 @@ select test.assert(
     where table_schema = 'public'
       and grantee = 'authenticated'
       and privilege_type = 'SELECT'
-  ) = 10
+  ) = 11
 );
 
 -- ── RLS coverage ──────────────────────────────────────────────────────
