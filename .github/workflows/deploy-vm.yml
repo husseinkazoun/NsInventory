@@ -1,12 +1,69 @@
 name: Deploy inventory to VM
 
 on:
+  # Manual route for an intentional deployment (e.g. redeploying an unchanged
+  # tree, or a rollback dispatched from a branch/tag at an older commit).
   workflow_dispatch:
   push:
     branches: [main]
-    paths-ignore:
-      - "apps/sanad-inventory-web/**"
-      - "docs/**"
+    # POSITIVE ALLOWLIST, not `paths-ignore`.
+    #
+    # This deployment is not code-only: docker/entrypoint.sh runs
+    # `php artisan migrate --force` and a seeder on every container start, so
+    # any run here restarts production AND migrates the production database.
+    # There are no down-migrations. A trigger list must therefore fail CLOSED.
+    #
+    # `paths-ignore` failed open: it only excluded `apps/sanad-inventory-web/**`
+    # and `docs/**`, so every new root-level path deployed production by
+    # default. Root tooling and documentation files (`.mcp.json`, `CLAUDE.md`)
+    # matched nothing in the ignore list and so triggered a full production
+    # rebuild, restart and migration despite the Laravel app never reading them.
+    #
+    # Entries below are root-anchored, which is what keeps the Laravel root
+    # separate from the React app: `public/**` and `package.json` match the
+    # Laravel tree only, never `apps/sanad-inventory-web/public/_redirects` or
+    # that app's own `package.json`.
+    #
+    # Deliberately ABSENT, each verified against the production build:
+    #   apps/**              React/Supabase app: its own migrations, Edge
+    #                        Functions and staging scripts never reach the VM.
+    #   docs/**, *.md, CNAME, LICENSE, .mcp.json, .editorconfig, .gitattributes,
+    #                        .gitignore, .env.example*   — not read at runtime.
+    #   tests/**, phpunit.xml  Tests do not ship (`composer install --no-dev`);
+    #                        a test-only commit must not migrate production.
+    #   Dockerfile, docker-compose.yml{,.save}  Dev only; the production stack
+    #                        names Dockerfile.production exclusively.
+    #   supervisord.conf     Not referenced by the production stack, which is
+    #                        php:8.2-apache + apache2-foreground.
+    #   scripts/**           Dev utility (icon generation) only.
+    #   storage/**           Tracks only .gitignore placeholders; the image
+    #                        mkdir -p's these and the runtime dirs are volumes.
+    #
+    # package.json, package-lock.json and vite.config.js ARE included even
+    # though Dockerfile.production runs `composer install` and no npm/vite
+    # build (public/build is gitignored, and the app serves the tracked
+    # public/assets tree). They are the Laravel root's own build manifests and
+    # change rarely; listing them costs little and avoids silent drift if a
+    # front-end build step is ever added to the production image.
+    paths:
+      - "app/**"
+      - "bootstrap/**"
+      - "config/**"
+      - "database/**"
+      - "docker/**"
+      - "public/**"
+      - "resources/**"
+      - "routes/**"
+      - "artisan"
+      - "composer.json"
+      - "composer.lock"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.js"
+      - "Dockerfile.production"
+      - "docker-compose.production.yml"
+      - ".dockerignore"
+      - ".github/workflows/deploy-vm.yml"
 
 permissions:
   contents: read
@@ -18,6 +75,14 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Approval gate. This deployment migrates the production database, so a run
+    # must be reviewable before it starts rather than only observable after.
+    #
+    # NOTE: naming an environment does not by itself protect anything. If
+    # `production-vm` does not already exist, GitHub creates it on first use
+    # with NO protection rules and the job proceeds unblocked. The environment
+    # must be created manually with a required reviewer BEFORE this lands.
+    environment: production-vm
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
