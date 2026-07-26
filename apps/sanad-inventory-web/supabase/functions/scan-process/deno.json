@@ -7,7 +7,7 @@
     "@std/assert": "jsr:@std/assert@1"
   },
   "tasks": {
-    "test": "deno test --frozen handler_test.ts",
-    "check": "deno check --frozen index.ts handler_test.ts"
+    "test": "deno test --frozen handler_test.ts openai_test.ts",
+    "check": "deno check --frozen index.ts handler_test.ts openai_test.ts"
   }
 }

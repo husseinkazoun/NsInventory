@@ -1,8 +1,4 @@
-import {
-  FunctionsFetchError,
-  FunctionsHttpError,
-  FunctionsRelayError,
-} from '@supabase/supabase-js'
+import { FunctionsHttpError } from '@supabase/supabase-js'
 import { currentUserId, supabase } from '../supabaseClient'
 import { asAppError, isAuthExpiryError, resolveCurrentOrgId } from '../org'
 import { createLabAsset } from './labAssets'
@@ -37,11 +33,19 @@ export type ExtractedResults = {
 
 export type ProcessResponse = ExtractedResults & {
   confidence: number
+  /**
+   * Vestigial. Nothing sets it any more — configured mode has no offline
+   * fallback — but `completeScanSession` still writes it to
+   * `activity_log.meta`, where historical rows carry it. Always false today.
+   */
   usedOfflineMock?: boolean
   /**
    * True when the values were fabricated rather than derived from the image.
-   * The Edge Function sets it; the offline fallback is simulated by
-   * definition. The UI must say so plainly whenever it is true.
+   *
+   * Only demo mode (no Supabase configured) ever produces it. In configured
+   * mode a response must carry `simulated: false` explicitly; anything else is
+   * rejected as a processing failure rather than shown as a result. The UI must
+   * say so plainly whenever it is true.
    */
   simulated?: boolean
 }
@@ -80,6 +84,45 @@ export class MalformedScanResponseError extends Error {
   }
 }
 
+/**
+ * The scan could not be processed, and the user can retry.
+ *
+ * Covers a provider timeout/429/4xx/5xx, a network or relay failure, and an
+ * empty or malformed response. In a *configured* environment there is no
+ * offline fallback: a failure is surfaced, never papered over with fabricated
+ * data. `serverMessage`, when present, is the Edge Function's own `{ error }`.
+ */
+export class ScanProcessingError extends Error {
+  constructor(serverMessage?: string) {
+    super(
+      serverMessage && serverMessage.trim()
+        ? serverMessage
+        : 'The image could not be analyzed right now. Please try again.',
+    )
+    this.name = 'ScanProcessingError'
+  }
+}
+
+/**
+ * The Edge Function answered 2xx but did not assert the result was genuine.
+ *
+ * A real analysis is marked `simulated: false`. A response that says
+ * `simulated: true`, or omits the marker entirely, is a placeholder — and in a
+ * configured environment there is nothing legitimate that produces one. It is
+ * treated as a processing failure so it can never be persisted as a completed
+ * scan or turned into an asset. Module-private: callers only see the
+ * `ScanProcessingError` it becomes.
+ */
+class SimulatedResultError extends Error {
+  constructor() {
+    super(
+      'The scan service returned a simulated placeholder instead of a real ' +
+        'analysis. Nothing was saved. Please try again.',
+    )
+    this.name = 'SimulatedResultError'
+  }
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -87,39 +130,38 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /**
  * What a failed `scan-process` invocation should become.
  *
- * `fallback` is reserved for genuine unavailability — a network failure, a
- * relay failure, or an HTTP 5xx. `auth` is a refusal (401/403), a real answer.
- * `surface` is every other 4xx (400/404/405/413/422/429…) and anything
- * unrecognised, including a malformed 2xx body: those are surfaced rather than
- * papered over with fabricated output.
+ * `auth` is a refusal (401/403) — a real answer about what the caller may do,
+ * and the one case the UI must not offer to retry. Everything else is a
+ * `failure`: unreachable function, relay failure, any HTTP status, a malformed
+ * 2xx body, or a response that never claimed to be genuine. They share one
+ * disposition because they share one outcome — mark the row failed, surface a
+ * retryable error. There is deliberately no third branch that yields data.
  */
 type InvokeDisposition =
   | { kind: 'auth'; status: 401 | 403 }
-  | { kind: 'fallback' }
-  | { kind: 'surface' }
+  | { kind: 'failure' }
 
 function classifyInvokeError(err: unknown): InvokeDisposition {
   // The function returned a non-2xx status. The status decides everything.
   if (err instanceof FunctionsHttpError) {
     const status = (err.context as { status?: unknown } | undefined)?.status
     if (status === 401 || status === 403) return { kind: 'auth', status }
-    if (typeof status === 'number' && status >= 500 && status <= 599) {
-      return { kind: 'fallback' }
-    }
-    // 400, 404, 405, 413, 422, 429, … — a definite answer, not an outage.
-    return { kind: 'surface' }
+    return { kind: 'failure' }
   }
-  // The request never produced a response: the function is unreachable.
-  if (err instanceof FunctionsFetchError) return { kind: 'fallback' }
-  if (err instanceof FunctionsRelayError) return { kind: 'fallback' }
-  // MalformedScanResponseError, or anything unrecognised, surfaces.
-  return { kind: 'surface' }
+  // FunctionsFetchError / FunctionsRelayError (unreachable or relay failure),
+  // MalformedScanResponseError, SimulatedResultError, anything unrecognised.
+  return { kind: 'failure' }
 }
 
 /**
- * Turns a *successful* Edge Function body into a ProcessResponse, or throws
- * MalformedScanResponseError. An empty or malformed 2xx body is a hard error:
- * it must never silently become a simulated scan.
+ * Turns a *successful* Edge Function body into a ProcessResponse, or throws.
+ *
+ * Runs in configured mode only, so it enforces the honesty invariant: the body
+ * must claim genuineness explicitly with `simulated: false`. `simulated: true`
+ * and an absent marker are both rejected — the caller must opt IN to asserting
+ * the values came from the image, and silence is never read as consent. An
+ * empty or malformed 2xx body is likewise a hard error: neither may quietly
+ * become a scan the reviewer believes was analysed.
  */
 function parseScanResponse(data: unknown): {
   response: ProcessResponse
@@ -128,11 +170,11 @@ function parseScanResponse(data: unknown): {
   if (!isPlainObject(data)) throw new MalformedScanResponseError()
   const extracted = data.extracted
   if (!isPlainObject(extracted)) throw new MalformedScanResponseError()
+  if (data.simulated !== false) throw new SimulatedResultError()
 
   const response: ProcessResponse = {
-    // Absent marker is treated as simulated: fail toward honesty, so a future
-    // real provider must opt IN to claiming its output is genuine.
-    simulated: data.simulated !== false,
+    // Proven above, not inferred: the body said so explicitly.
+    simulated: false,
     confidence: typeof data.confidence === 'number' ? data.confidence : 0,
     fields: extracted.fields as ProcessResponse['fields'],
     detected_condition:
@@ -159,36 +201,45 @@ export function intakeTagForSession(scanSessionId: string): string {
   return `LA-${compact.slice(0, 12)}`
 }
 
-// ── Demo-mode + Edge-Function-down fallback fixtures ──────────────────
-// Mirrors the Edge Function (`supabase/functions/scan-process/index.ts`)
-// so the React UI looks identical in either mode.
-const offlineMock: Record<ScanType, ProcessResponse> = {
+// ── Demo-mode fixtures (no Supabase configured) ───────────────────────
+// NOT a fallback. These are reachable only when `supabase` is null, i.e. the
+// app was built without Supabase env vars. In a configured environment a
+// failure surfaces as a retryable error and these are never substituted.
+//
+// The values are clothing, matching what the Edge Function now actually
+// analyses — the old lab-equipment fixtures (centrifuge, rotor, calibration
+// label) described a domain the scanner no longer recognises, which read as a
+// real capability the product does not have. Every fixture is labelled in the
+// value text as well as by `simulated: true`, so a screenshot taken out of
+// context still says what it is.
+const demoFixtures: Record<ScanType, ProcessResponse> = {
   intake: {
     simulated: true,
     confidence: 0.865,
     fields: [
-      { label: 'Manufacturer', value: 'Eppendorf',  confidence: 0.94 },
-      { label: 'Model',        value: 'MX-9',       confidence: 0.89 },
-      { label: 'Serial',       value: '87XJ-3401K', confidence: 0.72 },
-      { label: 'Asset class',  value: 'Centrifuge', confidence: 0.91 },
+      { label: 'Type',        value: 'Jacket (demo)',     confidence: 0.91 },
+      { label: 'Brand',       value: 'Sample Brand (demo)', confidence: 0.72 },
+      { label: 'Main color',  value: 'Navy',              confidence: 0.94 },
+      { label: 'Size',        value: 'M',                 confidence: 0.89 },
+      { label: 'Material',    value: '80% cotton, 20% polyester', confidence: 0.78 },
     ],
     detected_condition: 'good',
     suggested_lab_asset: {
       // No constant tag — see intakeTagForSession().
-      name: 'Centrifuge (simulated intake)',
-      manufacturer: 'Eppendorf',
-      model: 'MX-9',
-      serial: '87XJ-3401K',
+      name: 'Navy jacket, size M (simulated intake)',
+      manufacturer: 'Sample Brand (demo)',
+      model: 'Jacket',
+      serial: 'DEMO-STYLE-0001',
     },
   },
   condition: {
     simulated: true,
     confidence: 0.835,
     fields: [
-      { label: 'Visible wear',      value: 'Moderate',           confidence: 0.81 },
-      { label: 'Surface damage',    value: 'None',               confidence: 0.93 },
-      { label: 'Cable integrity',   value: 'Intact',             confidence: 0.86 },
-      { label: 'Calibration label', value: 'Expires 2026-12-15', confidence: 0.74 },
+      { label: 'Visible wear',   value: 'Light (demo)',        confidence: 0.81 },
+      { label: 'Stains',         value: 'None visible',        confidence: 0.93 },
+      { label: 'Seam integrity', value: 'Intact',              confidence: 0.86 },
+      { label: 'Care label',     value: 'Legible (demo)',      confidence: 0.74 },
     ],
     detected_condition: 'good',
   },
@@ -196,12 +247,12 @@ const offlineMock: Record<ScanType, ProcessResponse> = {
     simulated: true,
     confidence: 0.94,
     fields: [
-      { label: 'Components expected', value: '7', confidence: 1.0 },
-      { label: 'Components detected', value: '5', confidence: 0.88 },
+      { label: 'Items expected', value: '7', confidence: 1.0 },
+      { label: 'Items detected', value: '5', confidence: 0.88 },
     ],
     missing_components: [
-      { component_name: 'Power cable', severity: 'minor' },
-      { component_name: 'Spare rotor', severity: 'medium' },
+      { component_name: 'Matching belt (demo)', severity: 'minor' },
+      { component_name: 'Spare button (demo)', severity: 'medium' },
     ],
   },
 }
@@ -287,7 +338,7 @@ export async function uploadScanPhoto(input: {
 }
 
 // =====================================================================
-// processScanPhoto — calls the Edge Function, falls back to offline mock
+// processScanPhoto — real analysis in Supabase mode; simulated only in demo
 // =====================================================================
 export async function processScanPhoto(input: {
   scanSessionId: string
@@ -296,59 +347,58 @@ export async function processScanPhoto(input: {
   labAssetId?: string | null
 }): Promise<ProcessResponse> {
   if (!supabase) {
-    return offlineMock[input.scanType]
+    // DEMO MODE ONLY (no Supabase configured). The simulated fixture is
+    // returned and clearly labelled in the UI. This is the ONLY place a
+    // simulated result is ever produced.
+    return demoFixtures[input.scanType]
   }
 
-  // ── Phase 1: invoke the Edge Function ──
-  // Only genuine unavailability — a network failure, a relay failure, or an
-  // HTTP 5xx — is eligible for the offline fallback. A refusal (401/403), any
-  // other 4xx, and an empty or malformed 2xx body are all real answers, and
-  // must reach the caller rather than be replaced with fabricated results.
-  const outcome = await invokeScanProcess(supabase, input)
-  if (outcome.kind === 'fallback') return outcome.response
+  // ── Configured mode: real analysis, NO offline fallback ──
+  // Any failure marks the row failed and surfaces a clear, retryable error;
+  // fabricated results are never substituted for a real analysis.
+  const { response, extracted } = await runScanProcess(supabase, input)
 
-  // ── Phase 2: persist the extracted payload onto the photo_scan row ──
-  // Deliberately OUTSIDE the invocation error handling above. A persistence
-  // failure after a successful analysis is not a function outage; it must
-  // never trigger the offline fallback. Its `error` is checked explicitly and
-  // surfaced.
+  // ── Persist the extracted payload onto the photo_scan row ──
+  // Outside the invocation error handling: a persistence failure after a
+  // successful analysis is not a provider outage, so it surfaces directly.
   const { error: persistError } = await supabase
     .from('photo_scans')
     .update({
       processing_status: 'completed',
-      confidence: outcome.response.confidence,
-      extracted: outcome.extracted,
+      confidence: response.confidence,
+      extracted,
       processed_at: new Date().toISOString(),
     })
     .eq('scan_session_id', input.scanSessionId)
     .eq('image_path', input.imagePath)
   if (persistError) throw asAppError(persistError)
 
-  return outcome.response
+  return response
 }
 
 type ScanClient = NonNullable<typeof supabase>
 
-type InvokeOutcome =
-  | { kind: 'ok'; response: ProcessResponse; extracted: Record<string, unknown> }
-  | { kind: 'fallback'; response: ProcessResponse }
+type ScanInput = {
+  scanSessionId: string
+  imagePath: string
+  scanType: ScanType
+  labAssetId?: string | null
+}
 
 /**
- * Invokes `scan-process` and classifies the result. Returns the parsed
- * response on success, or the offline mock when — and only when — the function
- * is genuinely unavailable. Throws for a refusal (401/403), any other 4xx, an
- * empty/malformed body, or an expired session; those must never become the
- * offline mock.
+ * Invokes `scan-process` and returns the parsed result, or throws.
+ *
+ * There is NO offline fallback here — this runs only when Supabase is
+ * configured. A refusal (401/403) throws ScanAuthorizationError; every other
+ * failure (network, relay, any HTTP status, an empty/malformed body, or a
+ * response that did not assert `simulated: false`) marks the photo_scan row
+ * failed best-effort and throws a retryable ScanProcessingError. A simulated
+ * result is never produced or returned here.
  */
-async function invokeScanProcess(
+async function runScanProcess(
   client: ScanClient,
-  input: {
-    scanSessionId: string
-    imagePath: string
-    scanType: ScanType
-    labAssetId?: string | null
-  },
-): Promise<InvokeOutcome> {
+  input: ScanInput,
+): Promise<{ response: ProcessResponse; extracted: Record<string, unknown> }> {
   try {
     const { data, error } = await client.functions.invoke('scan-process', {
       body: {
@@ -359,54 +409,63 @@ async function invokeScanProcess(
       },
     })
     if (error) throw error
-    const { response, extracted } = parseScanResponse(data)
-    return { kind: 'ok', response, extracted }
+    return parseScanResponse(data)
   } catch (err) {
-    // An expired credential is not an outage — masking it with mock output
-    // would hide the real problem. Re-throw so the session-expiry path (sign
-    // out + redirect to /login) runs.
+    // An expired credential runs the session-expiry path (sign out + redirect).
     if (isAuthExpiryError(err)) throw asAppError(err)
 
+    // 401/403 are refusals — a real answer, never fabricated over.
     const disposition = classifyInvokeError(err)
-
-    // 401 means the credential was rejected; 403 means the caller may not scan
-    // here — a viewer, or another organization's session. Both are real
-    // answers; showing fabricated results would claim the scan worked when the
-    // server declined it.
     if (disposition.kind === 'auth') {
       throw new ScanAuthorizationError(disposition.status)
     }
 
-    // Every other 4xx, or an empty/malformed 2xx body. Surfacing beats
-    // silently returning fabricated data.
-    if (disposition.kind === 'surface') {
-      throw asAppError(err)
-    }
+    // Everything else is a processing failure. Record it (best-effort) and
+    // surface a clear, retryable error. No offline mock in configured mode.
+    // A dishonest response has no server `{ error }` to relay, so it carries
+    // its own explanation.
+    const serverMessage =
+      err instanceof SimulatedResultError
+        ? err.message
+        : await readServerMessage(err)
+    await markPhotoScanFailed(client, input, err)
+    throw new ScanProcessingError(serverMessage)
+  }
+}
 
-    // Genuine unavailability — network failure, relay failure, or HTTP 5xx.
-    // Fall back to the offline mock and record the failure best-effort so the
-    // UI can warn that the result is a placeholder.
-    const message = err instanceof Error ? err.message : String(err)
+/** Best-effort: records that this scan could not be processed. */
+async function markPhotoScanFailed(
+  client: ScanClient,
+  input: ScanInput,
+  err: unknown,
+): Promise<void> {
+  const message = err instanceof Error ? err.message : String(err)
+  try {
+    await client
+      .from('photo_scans')
+      .update({
+        processing_status: 'failed',
+        error_message: 'Image analysis failed: ' + message,
+      })
+      .eq('scan_session_id', input.scanSessionId)
+      .eq('image_path', input.imagePath)
+  } catch {
+    // best-effort; failing to record the failure shouldn't hide the real error
+  }
+}
+
+/** Best-effort read of the Edge Function's own `{ error }` message, if present. */
+async function readServerMessage(err: unknown): Promise<string | undefined> {
+  const context = (err as { context?: unknown } | null)?.context
+  if (typeof Response !== 'undefined' && context instanceof Response) {
     try {
-      await client
-        .from('photo_scans')
-        .update({
-          processing_status: 'failed',
-          error_message:
-            'Edge function unavailable; surfaced offline mock to the client. ' +
-            message,
-        })
-        .eq('scan_session_id', input.scanSessionId)
-        .eq('image_path', input.imagePath)
+      const body = await context.clone().json()
+      if (body && typeof body.error === 'string') return body.error
     } catch {
-      // best-effort; failing to record the failure shouldn't break UX
-    }
-
-    return {
-      kind: 'fallback',
-      response: { ...offlineMock[input.scanType], usedOfflineMock: true },
+      // no JSON body; fall through to the generic message
     }
   }
+  return undefined
 }
 
 // =====================================================================
@@ -420,6 +479,19 @@ export async function completeScanSession(input: {
 }): Promise<{ labAssetId: string | null }> {
   if (!supabase) {
     return { labAssetId: input.labAssetId ?? null }
+  }
+
+  // Configured environment: never turn a simulated/fabricated result into a
+  // real asset. Defence in depth — `processScanPhoto` already rejects anything
+  // that did not assert genuineness, so a caller reaching here with one built
+  // it by hand. The test is `!== false`, not `=== true`: an object that simply
+  // omits the marker has not claimed to be real either, and must not become an
+  // asset on the strength of a missing field.
+  if (input.extracted.simulated !== false) {
+    throw new ScanProcessingError(
+      'This result was not confirmed as a real analysis and cannot be saved. ' +
+        'Re-run the scan.',
+    )
   }
 
   const organizationId = await resolveCurrentOrgId()

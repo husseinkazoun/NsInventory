@@ -427,9 +427,11 @@ export default function ScanStart() {
           </p>
 
           {/*
-            Shown whenever the values are fabricated — including when the
-            function responded perfectly well. No image AI exists yet, so a
-            successful call must not read as a successful analysis.
+            Demo mode only. In a configured environment `processScanPhoto`
+            rejects anything not marked `simulated: false`, so a fabricated
+            result can never reach this screen — but the notice stays, because
+            the demo build renders the same component and must say plainly that
+            the values are fixed placeholders.
           */}
           {extracted?.simulated && (
             <div
@@ -450,19 +452,30 @@ export default function ScanStart() {
             </div>
           )}
 
-          {extracted?.usedOfflineMock && (
+          {/*
+            Genuine AI result: the values ARE derived from the photo, but the
+            model can be wrong. This screen is read-only — there are no editing
+            controls yet — so the notice must not tell the reviewer to "correct"
+            a field they cannot change. The only remedies actually available are
+            to go back for a clearer photo, or to fix the asset after saving.
+            Say exactly that until an edit workflow exists.
+          */}
+          {extracted && extracted.simulated === false && (
             <div
               role="status"
-              data-testid="offline-notice"
-              className="mt-2 flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600"
+              data-testid="ai-review-notice"
+              className="mt-4 flex items-start gap-2 rounded-lg border border-ns-blue/30 bg-ns-blue-tint px-3 py-2 text-xs text-ns-navy"
             >
               <AlertTriangle
-                className="h-4 w-4 shrink-0 text-slate-400"
+                className="h-4 w-4 shrink-0 text-ns-blue"
                 aria-hidden="true"
               />
               <span>
-                The scan-process function was unreachable, so this came from the
-                local fallback rather than the server. Re-run the scan to retry.
+                <strong>AI suggestions — check before saving.</strong> These
+                values were read from your photo by AI and can be wrong. Review
+                every field before saving. If something is wrong, go back and
+                choose a clearer photo. Anything the AI could not read is left
+                blank.
               </span>
             </div>
           )}
@@ -487,8 +500,9 @@ export default function ScanStart() {
                   <span className="text-slate-500">{f.label}</span>
                   <span className="flex items-center gap-3">
                     <span className="font-medium text-ns-navy">{f.value}</span>
-                    {/* A fabricated score while extraction is simulated —
-                        labelled so it is never read as measured confidence. */}
+                    {/* A demo fixture's score is fabricated; a real one is the
+                        model's own confidence. The tooltip distinguishes them
+                        so a fixed placeholder is never read as measured. */}
                     <span
                       title={
                         extracted.simulated

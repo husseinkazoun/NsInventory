@@ -163,13 +163,15 @@ Smoke tests against the deployed function, using disposable staging-only records
 - **Unauthenticated** request → 401
 - **Viewer** → 403, and a **cross-organization** member → 403
 - **Authorized** owner / admin / member → 200
-- The response carries the **simulation marker** (`simulated: true`)
+- The response carries the **simulation marker** (`simulated: true` — this was the pre-provider build; see below)
 - **CORS** allowlist honoured — the two configured localhost origins are echoed, an unlisted origin is not
 - **Two separate intake scans** produce distinct tags with no collision
 - **Retry** of an intake session produces no duplicate asset
 - **Cleanup** removed every seeded record, leaving no residue
 
-The function **still returns simulated results and performs no real image analysis** — no vision provider is connected. The frontend was **not** deployed, the branch was **not** pushed, and the production project was **not** accessed or modified.
+That deployed build (**version 1**) returns simulated results and performs no real image analysis — no vision provider was connected at the time. The frontend was **not** deployed, the branch was **not** pushed, and the production project was **not** accessed or modified.
+
+**Superseded in the working tree.** The `scan-process` source has since been reworked to call a real vision provider (see *Edge Function — `scan-process`* below). That work has **not** been deployed: staging still runs version 1, so the smoke-test results above describe the deployed function, not the current source.
 
 ### Database tests
 
@@ -188,9 +190,9 @@ npm test          # vitest run
 npm run test:watch
 ```
 
-Vitest + jsdom + Testing Library. 125 tests across `src/lib/org.test.ts` (resolver), `src/lib/session.test.tsx` (expiry, notice, redirect), `src/lib/permissions.test.ts` (role capability matrix), `src/lib/queries/scans.test.ts` (the `scan-process` fallback contract — refusals, 5xx-vs-other-4xx, malformed responses, persistence failures, and the simulation marker), `src/test/webStorage.test.ts` (Storage conformance) `supabase/staging/plan.test.mjs` (staging bootstrap plan and guards) and `supabase/staging/nodeVersion.test.mjs` (Node 22+ preflight, including real subprocess runs on an older runtime) and `src/pages/Login.test.tsx` (the first-sign-in redirect race). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
+Vitest + jsdom + Testing Library. 139 tests across `src/lib/org.test.ts` (resolver), `src/lib/session.test.tsx` (expiry, notice, redirect), `src/lib/permissions.test.ts` (role capability matrix), `src/lib/queries/scans.test.ts` (the `scan-process` contract — refusals, response-backed errors relaying the function's safe `{ error }` text, unreadable error bodies falling back to the generic retry line, malformed responses, persistence failures, and the configured-mode honesty invariant that rejects anything not marked `simulated: false`), `src/test/webStorage.test.ts` (Storage conformance) `supabase/staging/plan.test.mjs` (staging bootstrap plan and guards) and `supabase/staging/nodeVersion.test.mjs` (Node 22+ preflight, including real subprocess runs on an older runtime) and `src/pages/Login.test.tsx` (the first-sign-in redirect race). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
 
-Verified on Node 22.22.1, 24.14.0 and 25.9.0. On Node 20 the staging `nodeVersion.test.mjs` preflight cases fail by design — commit `95066ad` requires Node 22 for the staging scripts, and those cases assert that gate — while the rest of the suite passes (122/125).
+Verified on Node 22.22.1, 24.14.0 and 25.9.0. On Node 20 the staging `nodeVersion.test.mjs` preflight cases fail by design — commit `95066ad` requires Node 22 for the staging scripts, and those cases assert that gate — while the rest of the suite passes (136/139).
 
 ### Node's built-in Web Storage
 
@@ -243,7 +245,11 @@ RLS on `storage.objects` parses the leading 36-character UUID via `public.scan_o
 
 Source: `supabase/functions/scan-process/index.ts` (Deno; lives outside the React TS build).
 
-It returns deterministic, fabricated JSON keyed by scan type — **no real AI provider is connected and no image is ever read**. Every successful response carries `simulated: true` and a `simulation_notice`, and the UI shows a persistent *"Simulated analysis — no image AI was used"* banner even when the call succeeds, so a working deployment is never mistaken for a working analysis.
+It performs **real clothing recognition**. After the full authorization sequence passes, it downloads the private image through the caller-scoped client and sends it to the OpenAI Responses API with strict Structured Outputs (`openai.ts`, the only module that talks to a provider). Every successful response carries `simulated: false`; a provider failure becomes an error status and **never** a fabricated success. The client refuses any configured-mode response that does not assert `simulated: false`, marks the `photo_scans` row `failed`, and surfaces a retryable error — so a placeholder can never be persisted as a completed scan or become an asset.
+
+Simulated fixtures now exist in exactly one place: the frontend's **demo mode** (`src/lib/queries/scans.ts`), reachable only when no Supabase env vars are configured. They are clothing values labelled `(demo)`, carry `simulated: true`, and the UI shows a persistent *"Simulated analysis — no image AI was used"* banner for them.
+
+> **Not yet deployed.** The staging function is still at version 1 (the pre-provider build). Deploying this requires setting the `OPENAI_API_KEY` function secret and confirming `OPENAI_VISION_MODEL` — until the secret is set, every configured-mode scan returns 503 *"Image analysis is not configured"*.
 
 Security, following the current Supabase "Securing Edge Functions" guidance:
 
@@ -254,7 +260,7 @@ Security, following the current Supabase "Securing Edge Functions" guidance:
 - CORS is an allowlist (`ALLOWED_ORIGINS`, defaulting to local + the Pages origin) with `Vary: Origin`; an unlisted origin receives no `Access-Control-Allow-Origin`.
 - Nothing is logged — no tokens, image bytes, or identifiers.
 
-`handler.ts` holds the logic and takes its dependencies as arguments, so the tests run 31 cases without a server or network. `index.ts` is the thin entry that supplies the real context factory.
+`handler.ts` holds the logic and takes its dependencies as arguments — including `analyzeGarment`, so a mock provider stands in for OpenAI. The suite runs **67 cases** (`handler_test.ts` + `openai_test.ts`) without a server, a network call, or a provider credential: `openai_test.ts` injects both `fetch` and `env`, so no test ever reaches OpenAI or spends credits. `index.ts` is the thin entry that supplies the real context factory and the real provider.
 
 **Dependencies and tasks.** The function has its own `deno.json`, isolated from the app's npm workspace:
 
@@ -275,27 +281,28 @@ Deploy when ready — do **not** pass `--no-verify-jwt`:
 supabase functions deploy scan-process
 ```
 
-**Client fallback contract.** The React client (`processScanPhoto`) treats each outcome distinctly. The offline mock is only ever substituted for genuine unavailability — a refusal or a bad request is surfaced, because telling a user their scan succeeded when it did not is worse than an error. The classification uses the `@supabase/supabase-js` error classes:
+**Client failure contract.** In a **configured environment there is no fallback at all** — the offline mock was removed when the real provider landed. Every failure is surfaced, because telling a user their scan succeeded when it did not is worse than an error. Classification uses the `@supabase/supabase-js` error classes:
 
 | Invocation outcome | Client behaviour |
 |---|---|
-| `FunctionsFetchError` (network failure) | **Offline mock** (`usedOfflineMock: true`), failure recorded on the row |
-| `FunctionsRelayError` (relay failure) | **Offline mock** |
-| `FunctionsHttpError`, status **500–599** | **Offline mock** |
-| `FunctionsHttpError`, status **401** | Throws `ScanAuthorizationError` (session no longer valid) |
-| `FunctionsHttpError`, status **403** | Throws `ScanAuthorizationError` (not permitted here) |
-| `FunctionsHttpError`, any other 4xx (**400, 404, 405, 413, 422, 429**, …) | **Surfaced** — the original error is thrown, never the mock |
-| 2xx with an empty or malformed body (not an object, or `extracted` not an object) | Throws `MalformedScanResponseError` |
-| 2xx parsed, but the follow-up `photo_scans` update fails | **Surfaced** — the database error is thrown. A persistence failure after a successful analysis is not a function outage, so it never triggers the fallback |
+| `FunctionsHttpError`, status **401** / **403** | Throws `ScanAuthorizationError`. The row is **not** marked failed — a refusal is a real answer about permissions, not a failed analysis |
+| `FunctionsHttpError`, **any other status** | Row marked `failed`; throws `ScanProcessingError` carrying the function's own `{ error }` text when the body is readable JSON, else a generic retry message |
+| `FunctionsFetchError` (network) / `FunctionsRelayError` (relay) | Row marked `failed`; throws `ScanProcessingError` |
+| 2xx with an empty or malformed body (not an object, or `extracted` not an object) | Row marked `failed`; throws `ScanProcessingError` |
+| 2xx that does not assert `simulated: false` (says `true`, or omits the marker) | Row marked `failed`; throws `ScanProcessingError`. See the honesty invariant below |
+| 2xx parsed, but the follow-up `photo_scans` update fails | **Surfaced** — the database error is thrown. A persistence failure after a successful analysis is not a provider outage |
 
-The Edge Function invocation and the `photo_scans` persistence are handled in separate phases; only the invocation phase can reach the fallback.
+**Honesty invariant.** A configured-mode response must state that it is genuine: `simulated: false`, explicitly. `simulated: true` and an absent marker are both rejected, because silence is not consent — a caller must opt *in* to claiming the values came from the image. Such a response is never persisted as `completed` and can never become an asset; `completeScanSession` re-checks the same invariant (`!== false`) as defence in depth. Simulated results exist only in demo mode, where no Supabase is configured and the invariant does not apply.
+
+The Edge Function invocation and the `photo_scans` persistence are handled in separate phases; a failure in either is surfaced, and neither can yield fabricated data.
 
 ### What's still mocked after this commit
 
 - Dashboard KPIs (`mockData.kpis`)
 - Products / Orders / Purchases / Quotations / Directory / Settings pages
 - `LabAssetDetail` Inspection / Missing Components / Recent Activity panels (writes happen in Supabase mode, but the panels keep reading from `mockData` until a later commit wires them to real tables)
-- No real AI vision provider
+- Demo-mode scan fixtures (`demoFixtures` in `src/lib/queries/scans.ts`) — clothing values labelled `(demo)`, reachable only with no Supabase configured. The vision provider itself is real; see *Edge Function — `scan-process`*, including the deployment prerequisites
+- The review screen is **read-only** — it has no editing controls, so a wrong AI value cannot be corrected before saving. The notice says so plainly ("go back and choose a clearer photo") rather than asking the reviewer to correct fields they cannot edit
 
 ### Other scripts
 

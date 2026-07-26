@@ -18,9 +18,13 @@
 // the platform rejects requests with no valid JWT before this code runs, and
 // the handler then decides what the authenticated caller may actually reach.
 //
-// The extraction is still simulated — see handler.ts. No AI provider is
-// called and no provider key is read here. Nothing is logged: no tokens, no
-// image bytes, no identifiers.
+// The extraction is real — see openai.ts, which is the only module that talks
+// to a provider. This file wires that provider in; it does not read the key
+// itself (openai.ts reads OPENAI_API_KEY per call). A successful response is
+// marked `simulated: false`, and a provider failure becomes an error status,
+// never a fabricated success. Nothing is logged anywhere in this function: no
+// key, no token, no image bytes or base64, no signed URL, no provider
+// response, no identifiers.
 //
 // Deploy: supabase functions deploy scan-process
 //         (do NOT pass --no-verify-jwt)
@@ -31,6 +35,12 @@
 // Vite/tsc build (tsconfig `include` is `src` only), which never sees it.
 import { createSupabaseContext } from '@supabase/server'
 import { handleScanProcess, type CallerContext } from './handler.ts'
+import { createOpenAIVision } from './openai.ts'
+
+// The real clothing-recognition provider. It reads OPENAI_API_KEY /
+// OPENAI_VISION_MODEL from the environment on each call, so a key added later
+// is picked up on the next invocation. handler.ts only sees the function.
+const analyzeGarment = createOpenAIVision()
 
 /**
  * Origins permitted to call this function from a browser.
@@ -80,5 +90,6 @@ Deno.serve((req: Request) =>
   handleScanProcess(req, {
     createContext,
     allowedOrigins: allowedOrigins(),
+    analyzeGarment,
   }),
 )

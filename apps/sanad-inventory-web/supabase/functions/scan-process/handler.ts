@@ -3,9 +3,9 @@
 // Request handling for the Photo Scan endpoint, with no I/O of its own.
 //
 // Everything the handler needs — the Supabase context factory, the CORS
-// allowlist, the clock — arrives through `Deps`, so the whole surface is
-// testable without starting a server, opening a socket, or reaching Supabase.
-// `index.ts` supplies the real implementations.
+// allowlist, the vision provider, the clock — arrives through `Deps`, so the
+// whole surface is testable without starting a server, opening a socket, or
+// reaching Supabase or OpenAI. `index.ts` supplies the real implementations.
 //
 // SECURITY MODEL
 // --------------
@@ -22,14 +22,28 @@
 // what the caller may do — with RLS bypassed, a cross-organization identifier
 // would simply resolve, and the check would pass.
 //
-// The extraction is still deterministic and fabricated. It is labelled
-// `simulated: true` so no caller can mistake it for image analysis.
+// The image is downloaded and sent to OpenAI ONLY after the full authorization
+// sequence passes. The extraction is now genuine (`simulated: false`); the
+// simulated fixtures live in the frontend's demo mode, not here.
+
+import {
+  type AnalyzeGarment,
+  type ClothingExtraction,
+  type Confident,
+  OpenAIConfigError,
+  OpenAIHttpError,
+  OpenAINetworkError,
+  OpenAITimeoutError,
+} from './openai.ts'
 
 export const SCAN_TYPES = ['intake', 'condition', 'missing'] as const
 export type ScanType = (typeof SCAN_TYPES)[number]
 
 /** Request bodies here are small JSON documents; anything larger is refused. */
 export const MAX_BODY_BYTES = 4096
+
+/** Application limit on the downloaded image, independent of Storage limits. */
+export const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -57,6 +71,18 @@ export type CallerContext = {
         eq: (column: string, value: string) => any
       }
     }
+    /**
+     * Storage is used to download the private scan image. The concrete client
+     * has it; this structural type only lists what the handler touches. Because
+     * index.ts casts the real client through `as unknown`, the presence of
+     * `storage` is asserted rather than proven — the handler guards it at
+     * runtime before use.
+     */
+    storage: {
+      from: (bucket: string) => {
+        download: (path: string) => Promise<{ data: Blob | null; error: unknown }>
+      }
+    }
   }
   userId: string
 }
@@ -69,7 +95,11 @@ export type Deps = {
    */
   createContext: (req: Request) => Promise<CallerContext | null>
   allowedOrigins: string[]
+  /** Real clothing analysis. A mock stands in for it in tests. */
+  analyzeGarment: AnalyzeGarment
   now?: () => string
+  /** Overridable image size limit (bytes) for tests. */
+  maxImageBytes?: number
 }
 
 // ── CORS ──────────────────────────────────────────────────────────────
@@ -159,66 +189,149 @@ export function organizationFromImagePath(imagePath: string): string | null {
   return match ? match[1] : null
 }
 
-// ── Simulated extraction ──────────────────────────────────────────────
-// Deterministic placeholder output. `simulated: true` travels with it so the
-// UI can say plainly that no image was analysed. Field-level numbers are
-// deliberately NOT called confidence anywhere user-facing.
+// ── Image inspection ──────────────────────────────────────────────────
+// MIME is detected from magic bytes, never trusted from a header or filename.
 
-type Extracted = {
-  fields?: { label: string; value: string; confidence: number }[]
-  detected_condition?: string | null
-  missing_components?: { component_name: string; severity: string }[]
-  suggested_lab_asset?: Record<string, string>
+export type AcceptedMime = 'image/jpeg' | 'image/png' | 'image/webp'
+
+export function detectImageMime(bytes: Uint8Array): AcceptedMime | null {
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  ) {
+    return 'image/jpeg'
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    return 'image/png'
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 && // R
+    bytes[1] === 0x49 && // I
+    bytes[2] === 0x46 && // F
+    bytes[3] === 0x46 && // F
+    bytes[8] === 0x57 && // W
+    bytes[9] === 0x45 && // E
+    bytes[10] === 0x42 && // B
+    bytes[11] === 0x50 // P
+  ) {
+    return 'image/webp'
+  }
+  return null
 }
 
-const SIMULATED: Record<ScanType, Extracted> = {
-  intake: {
-    fields: [
-      { label: 'Manufacturer', value: 'Eppendorf', confidence: 0.94 },
-      { label: 'Model', value: 'MX-9', confidence: 0.89 },
-      { label: 'Serial', value: '87XJ-3401K', confidence: 0.72 },
-      { label: 'Asset class', value: 'Centrifuge', confidence: 0.91 },
-    ],
-    detected_condition: 'good',
-    // No `tag` is suggested. A constant tag collided with the
-    // unique (organization_id, tag) constraint on the second intake scan in
-    // any organization; the client now derives a per-session tag instead.
-    suggested_lab_asset: {
-      name: 'Centrifuge (simulated intake)',
-      manufacturer: 'Eppendorf',
-      model: 'MX-9',
-      serial: '87XJ-3401K',
+// ── Mapping: clothing extraction -> response contract ─────────────────
+// The existing frontend consumes `fields`, `detected_condition` and
+// `suggested_lab_asset`. The full structured clothing payload rides along in
+// `extracted.clothing` for the later clothing-schema phase.
+
+export type ExtractedField = { label: string; value: string; confidence: number }
+
+export type MappedExtracted = {
+  fields: ExtractedField[]
+  detected_condition: string | null
+  suggested_lab_asset: Record<string, string>
+  clothing: ClothingExtraction
+}
+
+// The parser already rejects a non-finite confidence, so this is defence in
+// depth: NaN survives both Math.min and Math.max, and JSON.stringify turns it
+// into `null` — a field would reach the reviewer carrying no score at all.
+function clamp01(n: number): number {
+  if (!Number.isFinite(n)) return 0
+  return Math.max(0, Math.min(1, n))
+}
+
+export function mapExtraction(c: ClothingExtraction): {
+  extracted: MappedExtracted
+  confidence: number
+} {
+  const fields: ExtractedField[] = []
+  const push = (label: string, f: Confident) => {
+    if (f && f.value != null && f.value !== '') {
+      fields.push({ label, value: f.value, confidence: clamp01(f.confidence) })
+    }
+  }
+  push('Type', c.garment_type)
+  push('Brand', c.brand)
+  push('Main color', c.main_color)
+  push('Secondary color', c.secondary_color)
+  push('Pattern', c.pattern)
+  push('Size', c.size_label)
+  push('Size system', c.size_system)
+  push('Material', c.material_composition)
+  push('Style code', c.style_code)
+  push('Label text', c.label_text)
+
+  // Only the five allowed conditions reach the client; 'unknown' becomes null.
+  const detected_condition =
+    c.visible_condition === 'unknown' ? null : c.visible_condition
+
+  // Temporary mapping onto the lab_assets columns (no schema change this phase):
+  //   name <- title, manufacturer <- brand, model <- garment type, serial <- style code.
+  const suggested: Record<string, string> = {}
+  const name = c.suggested_title.value?.trim() || c.garment_type.value?.trim()
+  if (name) suggested.name = name
+  if (c.brand.value) suggested.manufacturer = c.brand.value
+  if (c.garment_type.value) suggested.model = c.garment_type.value
+  if (c.style_code.value) suggested.serial = c.style_code.value
+
+  const confidence =
+    fields.length === 0
+      ? 0
+      : Math.round(
+          (fields.reduce((a, f) => a + f.confidence, 0) / fields.length) * 1000,
+        ) / 1000
+
+  return {
+    extracted: {
+      fields,
+      detected_condition,
+      suggested_lab_asset: suggested,
+      clothing: c,
     },
-  },
-  condition: {
-    fields: [
-      { label: 'Visible wear', value: 'Moderate', confidence: 0.81 },
-      { label: 'Surface damage', value: 'None', confidence: 0.93 },
-      { label: 'Cable integrity', value: 'Intact', confidence: 0.86 },
-      { label: 'Calibration label', value: 'Expires 2026-12-15', confidence: 0.74 },
-    ],
-    detected_condition: 'good',
-  },
-  missing: {
-    fields: [
-      { label: 'Components expected', value: '7', confidence: 1.0 },
-      { label: 'Components detected', value: '5', confidence: 0.88 },
-    ],
-    missing_components: [
-      { component_name: 'Power cable', severity: 'minor' },
-      { component_name: 'Spare rotor', severity: 'medium' },
-    ],
-  },
+    confidence,
+  }
 }
 
-function aggregateScore(extracted: Extracted): number {
-  const fields = extracted.fields ?? []
-  if (fields.length === 0) return 0.85
-  const sum = fields.reduce(
-    (acc, f) => acc + Math.max(0, Math.min(1, f.confidence)),
-    0,
+/** Maps a typed provider error to a safe, retryable HTTP response. */
+function providerErrorResponse(
+  err: unknown,
+  cors: Record<string, string>,
+): Response {
+  if (err instanceof OpenAIConfigError) {
+    return fail(503, 'Image analysis is not configured', cors)
+  }
+  if (err instanceof OpenAITimeoutError || err instanceof OpenAINetworkError) {
+    return fail(504, 'Image analysis timed out. Please try again.', cors)
+  }
+  if (err instanceof OpenAIHttpError) {
+    if (err.status === 429) {
+      return fail(429, 'Image analysis is busy. Please try again shortly.', cors)
+    }
+    if (err.status >= 500) {
+      return fail(502, 'Image analysis failed. Please try again.', cors)
+    }
+    // A provider 4xx (e.g. the configured model is unavailable) surfaces the
+    // provider's own message — and only that message, never the whole body —
+    // so the model is never silently swapped.
+    const detail = err.providerMessage ? `: ${err.providerMessage}` : ''
+    return fail(502, `Image analysis rejected the request${detail}`, cors)
+  }
+  // Malformed body, refusal, or anything unrecognised.
+  return fail(
+    502,
+    'Image analysis returned an unreadable result. Please try again.',
+    cors,
   )
-  return Math.round((sum / fields.length) * 1000) / 1000
 }
 
 // ── Handler ───────────────────────────────────────────────────────────
@@ -337,20 +450,51 @@ export async function handleScanProcess(
     return fail(403, 'Forbidden', cors)
   }
 
-  // ── Simulated extraction ──
-  const extracted = SIMULATED[request.scan_type]
+  // ─────────────────────────────────────────────────────────────────────
+  // Everything past this point runs ONLY for an authenticated caller who is a
+  // member of the owning organization with a write role. No image is
+  // downloaded or sent to OpenAI before here.
+  // ─────────────────────────────────────────────────────────────────────
+
+  // ── Download the private image via the caller-scoped client ──
+  // RLS on storage.objects applies. The bucket stays private; no public URL is
+  // ever created. `storage` is asserted by the type but guarded at runtime.
+  const storage = ctx.supabase.storage
+  if (!storage || typeof storage.from !== 'function') {
+    return fail(500, 'Image could not be retrieved', cors)
+  }
+  const download = await storage.from('lab-asset-scans').download(request.image_path)
+  if (download.error || !download.data) {
+    return fail(502, 'Image could not be retrieved', cors)
+  }
+  const bytes = new Uint8Array(await download.data.arrayBuffer())
+
+  // ── Validate before sending anything externally ──
+  // Generic messages only — no path, token, or internal detail is exposed.
+  if (bytes.length === 0) return fail(422, 'Invalid image', cors)
+  const maxBytes = deps.maxImageBytes ?? MAX_IMAGE_BYTES
+  if (bytes.length > maxBytes) return fail(413, 'Image too large', cors)
+  const mimeType = detectImageMime(bytes)
+  if (!mimeType) return fail(415, 'Unsupported image type', cors)
+
+  // ── Real clothing analysis ──
+  let extraction: ClothingExtraction
+  try {
+    extraction = await deps.analyzeGarment({ bytes, mimeType })
+  } catch (err) {
+    // Provider failures never become a fabricated success.
+    return providerErrorResponse(err, cors)
+  }
+
+  const { extracted, confidence } = mapExtraction(extraction)
   const now = deps.now ? deps.now() : new Date().toISOString()
 
   return new Response(
     JSON.stringify({
       scan_session_id: request.scan_session_id,
       scan_type: request.scan_type,
-      // Not a measurement of anything. Kept for response-shape compatibility;
-      // `simulated` is what callers should branch on.
-      confidence: aggregateScore(extracted),
-      simulated: true,
-      simulation_notice:
-        'Simulated analysis — no image AI was used. These values are fabricated.',
+      confidence,
+      simulated: false,
       extracted,
       generated_at: now,
     }),
