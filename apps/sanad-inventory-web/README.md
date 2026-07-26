@@ -147,6 +147,30 @@ npm run staging:teardown -- --apply
 
 Full walkthrough — project creation, Auth settings, migration order, verification per role, advisor re-run — in [`supabase/staging/README.md`](./supabase/staging/README.md). The service-role key is read from the environment and never committed.
 
+#### `scan-process` deployment verification (2026-07-26)
+
+On **2026-07-26** the `scan-process` Edge Function was deployed to the dedicated Sanad Inventory **staging** project (ref `wkiirgvfijzibczwglzi`) and verified live.
+
+| Field | Value |
+|---|---|
+| Status | **ACTIVE** |
+| Version | **1** |
+| Function ID | `dd61a999-98d3-4bf9-8c3f-1eeb7ac2e928` |
+| JWT verification | **Enabled** (`verify_jwt = true`) — confirmed live: a request with no `Authorization` header is rejected by the platform gateway before the handler runs |
+
+Smoke tests against the deployed function, using disposable staging-only records that were removed afterward, all passed:
+
+- **Unauthenticated** request → 401
+- **Viewer** → 403, and a **cross-organization** member → 403
+- **Authorized** owner / admin / member → 200
+- The response carries the **simulation marker** (`simulated: true`)
+- **CORS** allowlist honoured — the two configured localhost origins are echoed, an unlisted origin is not
+- **Two separate intake scans** produce distinct tags with no collision
+- **Retry** of an intake session produces no duplicate asset
+- **Cleanup** removed every seeded record, leaving no residue
+
+The function **still returns simulated results and performs no real image analysis** — no vision provider is connected. The frontend was **not** deployed, the branch was **not** pushed, and the production project was **not** accessed or modified.
+
 ### Database tests
 
 ```bash
