@@ -147,7 +147,11 @@ npm run staging:teardown -- --apply
 
 Full walkthrough — project creation, Auth settings, migration order, verification per role, advisor re-run — in [`supabase/staging/README.md`](./supabase/staging/README.md). The service-role key is read from the environment and never committed.
 
-#### `scan-process` deployment verification (2026-07-26)
+#### `scan-process` version 1 — authorization smoke tests (2026-07-26, historical)
+
+> Kept as the record of how the **authorization model** was verified live. It
+> describes **version 1**, the pre-provider build, which is no longer the
+> deployed version — see *version 5* below for what staging runs now.
 
 On **2026-07-26** the `scan-process` Edge Function was deployed to the dedicated Sanad Inventory **staging** project (ref `wkiirgvfijzibczwglzi`) and verified live.
 
@@ -163,15 +167,40 @@ Smoke tests against the deployed function, using disposable staging-only records
 - **Unauthenticated** request → 401
 - **Viewer** → 403, and a **cross-organization** member → 403
 - **Authorized** owner / admin / member → 200
-- The response carries the **simulation marker** (`simulated: true` — this was the pre-provider build; see below)
+- The response carries the **simulation marker** (`simulated: true` — correct for the pre-provider build; version 5 returns `simulated: false`)
 - **CORS** allowlist honoured — the two configured localhost origins are echoed, an unlisted origin is not
 - **Two separate intake scans** produce distinct tags with no collision
 - **Retry** of an intake session produces no duplicate asset
 - **Cleanup** removed every seeded record, leaving no residue
 
-That deployed build (**version 1**) returns simulated results and performs no real image analysis — no vision provider was connected at the time. The frontend was **not** deployed, the branch was **not** pushed, and the production project was **not** accessed or modified.
+That build (**version 1**) returned simulated results and performed no real image analysis — no vision provider was connected at the time. The frontend was **not** deployed and the production project was **not** accessed or modified.
 
-**Superseded in the working tree.** The `scan-process` source has since been reworked to call a real vision provider (see *Edge Function — `scan-process`* below). That work has **not** been deployed: staging still runs version 1, so the smoke-test results above describe the deployed function, not the current source.
+#### `scan-process` version 5 — provider-enabled deployment (2026-07-26, current)
+
+The provider implementation **is deployed to staging**. It supersedes version 1: the function now performs real clothing recognition and returns `simulated: false`.
+
+| Field | Value |
+|---|---|
+| Project | **staging** `wkiirgvfijzibczwglzi` — the production project was not accessed |
+| Status | **ACTIVE** |
+| Version | **5** — the counter includes intermediate redeploys not recorded here |
+| Function ID | `dd61a999-98d3-4bf9-8c3f-1eeb7ac2e928` |
+| Deployed at | **2026-07-26 04:51:58 UTC** |
+| Source commit | `608919d` — *Add real clothing vision analysis to scan processing* |
+| Command | `supabase functions deploy scan-process --project-ref wkiirgvfijzibczwglzi --use-api` (Docker unavailable; **no** `--no-verify-jwt`, **no** `--prune`) |
+| JWT verification | **Enabled** — `verify_jwt: true` read back from the Management API, not merely asserted in `config.toml` |
+
+Post-deployment checks, all unauthenticated and free (no provider request was made):
+
+- **No `Authorization` header** → `401 {"code":"UNAUTHORIZED_NO_AUTH_HEADER"}`
+- **Malformed bearer** → `401 {"code":"UNAUTHORIZED_INVALID_JWT_FORMAT"}`
+
+  Both are *platform gateway* codes rather than the handler's own `{"error":"Unauthorized"}`, which is what confirms the gateway rejects before the handler runs.
+- **The function boots and the handler executes** — a CORS preflight echoes `Access-Control-Allow-Origin` for an allowed origin and withholds it for an unlisted one. Only the handler's own allowlist can draw that distinction, so `handler.ts` and the new `openai.ts` load and run: the server-side (`--use-api`) bundle resolves correctly.
+
+Required secrets `OPENAI_API_KEY` and `OPENAI_VISION_MODEL` are present in staging (names confirmed; values never read, printed, or changed).
+
+**Not yet exercised end-to-end.** No authenticated scan has been run and no OpenAI request has been made, so `OPENAI_VISION_MODEL` (`gpt-5.6-terra`) is set but still unverified against the live API. A wrong model name surfaces as a provider 4xx carrying the provider's exact message — never a silent model swap, and never a fabricated success. The frontend was **not** deployed, `main` was **not** touched, and no staging data was created.
 
 ### Database tests
 
@@ -249,7 +278,7 @@ It performs **real clothing recognition**. After the full authorization sequence
 
 Simulated fixtures now exist in exactly one place: the frontend's **demo mode** (`src/lib/queries/scans.ts`), reachable only when no Supabase env vars are configured. They are clothing values labelled `(demo)`, carry `simulated: true`, and the UI shows a persistent *"Simulated analysis — no image AI was used"* banner for them.
 
-> **Not yet deployed.** The staging function is still at version 1 (the pre-provider build). Deploying this requires setting the `OPENAI_API_KEY` function secret and confirming `OPENAI_VISION_MODEL` — until the secret is set, every configured-mode scan returns 503 *"Image analysis is not configured"*.
+> **Deployed to staging** as **version 5** on 2026-07-26 (project `wkiirgvfijzibczwglzi`), with `OPENAI_API_KEY` and `OPENAI_VISION_MODEL` set as function secrets — see *`scan-process` version 5* above. Without the key the function returns 503 *"Image analysis is not configured"* rather than falling back to fabricated output.
 
 Security, following the current Supabase "Securing Edge Functions" guidance:
 
