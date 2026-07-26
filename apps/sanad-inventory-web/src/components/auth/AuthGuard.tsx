@@ -30,7 +30,10 @@ export function AuthGuard({ children }: { children: ReactNode }) {
   }
 
   if (!session) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />
+    // Preserve the full attempted destination, not just the path, so query
+    // params (filters, deep links) survive the round trip through /login.
+    const from = `${location.pathname}${location.search}`
+    return <Navigate to="/login" replace state={{ from }} />
   }
 
   return <>{children}</>

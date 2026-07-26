@@ -2,16 +2,41 @@
 
 ## 1. Active Repository
 
-- **Active path**: `/Volumes/Kingston-XS2000/Projects/NsInventory`
-- **GitHub**: `git@github.com:husseinkazoun/NsInventory.git`
+- **Active path**: `/Users/husseinkazoun/work/NsInventory-publish`
+- **GitHub**: `https://github.com/husseinkazoun/NsInventory.git`
 
-> ⚠️ **Stale copy warning**: `/Volumes/T4-SanDisk/Websites:Apps/NsInventory/enhanced-inventory-system`
-> is an older T4-SanDisk copy. **Do not use or edit it.** All work happens in the
-> Kingston repo above.
+> ⚠️ **Stale copies**: `/Volumes/Kingston-XS2000/Projects/NsInventory` and
+> `/Volumes/T4-SanDisk/Websites:Apps/NsInventory/enhanced-inventory-system`
+> are older external-drive checkouts. **Do not use or edit them.** All work
+> happens at the active path above.
+
+## 1b. Two applications live in this repo
+
+| | Path | Serves |
+|---|---|---|
+| **Laravel 10** (production) | repo root | `sanadinventory.com`, from the VM |
+| **React/Vite/Supabase** (transition target) | `apps/sanad-inventory-web` | `https://sanad-inventory.pages.dev` (Cloudflare Pages) |
+
+The React app is a self-contained npm project with its own `package.json`,
+Supabase migrations, Edge Function and README. A Supabase project is linked
+locally via `apps/sanad-inventory-web/supabase/.temp/`, which is gitignored —
+**never commit the project ref or any key**.
+
+Transition guidance:
+
+- The Laravel app is production. **Do not disrupt, replace, or deploy over
+  it**, and do not repoint `sanadinventory.com` without an explicit,
+  separately agreed cutover.
+- Do not modify the remote Supabase project, production database, DNS, the
+  Cloudflare project or the VM as a side effect of code work.
+- Feature-by-feature status, data-migration requirements and known security
+  gaps: `docs/feature-parity-matrix.md`.
+- React checks are run from `apps/sanad-inventory-web`:
+  `npm test` (Vitest), `npm run typecheck`, `npm run build`.
 
 ## 2. Branch & Latest Pushed Commit
 
-- **Current branch**: `main` (tracks `origin/main`)
+- **Default branch**: `main` (tracks `origin/main`)
 - **Latest branding commit (pushed)**:
 
   ```
@@ -76,12 +101,15 @@ Re-run before commits when feasible (see working rules below).
 
 ## 8. Working Rules for Claude
 
-- **Always confirm** `pwd` is `/Volumes/Kingston-XS2000/Projects/NsInventory`
+- **Always confirm** `pwd` is `/Users/husseinkazoun/work/NsInventory-publish`
   before any edits.
-- **Never edit** the T4-SanDisk copy (`/Volumes/T4-SanDisk/Websites:Apps/...`).
+- **Never edit** the external-drive copies (`/Volumes/Kingston-XS2000/...`,
+  `/Volumes/T4-SanDisk/Websites:Apps/...`).
 - **Never push directly to `main`** unless the user explicitly asks.
-- **Before committing**, run `php artisan test` when feasible, and run
-  `node --check` / `npx tsc --noEmit` style checks for any JS/TS touched.
+- **Before committing**, run `php artisan test` when feasible for Laravel
+  changes (note: PHPUnit is not installed in this checkout), and for anything
+  under `apps/sanad-inventory-web` run `npm test && npm run build` from that
+  directory.
 - **Preserve** routes, auth logic, and dashboard logic unless specifically
   asked to change them.
 - **Prefer surgical edits** over wholesale rewrites.

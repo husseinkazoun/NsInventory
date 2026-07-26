@@ -1,20 +1,11 @@
 import { currentUserId, supabase } from '../supabaseClient'
+import { asAppError, resolveCurrentOrgId } from '../org'
 import {
   labAssets as mockLabAssets,
   type AssetCondition,
   type AssetStatus,
   type LabAsset,
 } from '../mockData'
-
-/**
- * Hardcoded development organization id (matches `supabase/seed.sql`).
- *
- * TODO(commit-3+): replace with the active organization derived from the
- * signed-in user's `organization_members` rows. For Commit 2 we keep a
- * single seeded org so the query layer can land before auth bootstrap
- * is fleshed out.
- */
-export const DEV_ORG_ID = '11111111-1111-1111-1111-111111111111'
 
 // Row shape returned by `lab_assets` queries (snake_case, nullable).
 type LabAssetRow = {
@@ -60,24 +51,31 @@ function rowToLabAsset(row: LabAssetRow): LabAsset {
   }
 }
 
+// Reads are filtered by organization_id as well as gated by RLS. RLS alone
+// would return the union of every organization the user belongs to, which is
+// wrong for a multi-org user: the UI shows one active tenant at a time.
 export async function listLabAssets(): Promise<LabAsset[]> {
   if (!supabase) return mockLabAssets
+  const organizationId = await resolveCurrentOrgId()
   const { data, error } = await supabase
     .from('lab_assets')
     .select(SELECT)
+    .eq('organization_id', organizationId)
     .order('created_at', { ascending: false })
-  if (error) throw error
+  if (error) throw asAppError(error)
   return (data ?? []).map((r) => rowToLabAsset(r as unknown as LabAssetRow))
 }
 
 export async function getLabAsset(id: string): Promise<LabAsset | null> {
   if (!supabase) return mockLabAssets.find((a) => a.id === id) ?? null
+  const organizationId = await resolveCurrentOrgId()
   const { data, error } = await supabase
     .from('lab_assets')
     .select(SELECT)
     .eq('id', id)
+    .eq('organization_id', organizationId)
     .maybeSingle()
-  if (error) throw error
+  if (error) throw asAppError(error)
   return data ? rowToLabAsset(data as unknown as LabAssetRow) : null
 }
 
@@ -114,11 +112,12 @@ export async function createLabAsset(input: CreateLabAssetInput): Promise<LabAss
     }
   }
 
+  const organizationId = await resolveCurrentOrgId()
   const createdBy = await currentUserId()
   const { data, error } = await supabase
     .from('lab_assets')
     .insert({
-      organization_id: DEV_ORG_ID,
+      organization_id: organizationId,
       tag: input.tag,
       name: input.name,
       manufacturer: input.manufacturer ?? null,
@@ -132,6 +131,6 @@ export async function createLabAsset(input: CreateLabAssetInput): Promise<LabAss
     .select(SELECT)
     .single()
 
-  if (error) throw error
+  if (error) throw asAppError(error)
   return rowToLabAsset(data as unknown as LabAssetRow)
 }

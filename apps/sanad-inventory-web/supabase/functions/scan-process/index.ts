@@ -1,162 +1,95 @@
 // supabase/functions/scan-process/index.ts
 //
-// Sanad Inventory — Photo Scan extraction stub.
+// Sanad Inventory — Photo Scan endpoint.
 //
-// Deno serverless function. Returns deterministic mock extracted data
-// based on `scan_type`. It does NOT call any AI provider yet — replace
-// `mockResults[scanType]` with a real vision provider integration
-// (OpenAI, Anthropic Claude Vision, Google Gemini, etc.) when ready.
+// Entry point only. All request handling lives in `handler.ts`, which takes
+// its dependencies as arguments so it can be tested without a server or a
+// network. Keeping this file thin is what makes that possible.
 //
-// Deploy:  supabase functions deploy scan-process
-// Invoke:  POST https://<project-ref>.supabase.co/functions/v1/scan-process
+// Authentication follows the current Supabase guidance ("Securing Edge
+// Functions"): `createSupabaseContext` with `auth: 'user'`, which validates
+// the caller's JWT and returns a Supabase client already scoped to them, so
+// RLS applies to every query the handler makes. `createSupabaseContext` is
+// used rather than `withSupabase` because the handler shapes its own generic
+// error responses.
 //
-// Request body:
-//   {
-//     scan_type:        'intake' | 'condition' | 'missing'
-//     scan_session_id:  string (uuid)
-//     image_path:       string  (storage key in lab-asset-scans)
-//     lab_asset_id?:    string | null
-//   }
+// `verify_jwt = true` is set explicitly for this function in config.toml.
+// That is the platform default, and it is the setting this pattern expects:
+// the platform rejects requests with no valid JWT before this code runs, and
+// the handler then decides what the authenticated caller may actually reach.
 //
-// Response:
-//   {
-//     scan_session_id, scan_type, confidence,
-//     extracted: {
-//       fields?, detected_condition?, missing_components?, suggested_lab_asset?
-//     },
-//     generated_at
-//   }
+// The extraction is real — see openai.ts, which is the only module that talks
+// to a provider. This file wires that provider in; it does not read the key
+// itself (openai.ts reads OPENAI_API_KEY per call). A successful response is
+// marked `simulated: false`, and a provider failure becomes an error status,
+// never a fabricated success. Nothing is logged anywhere in this function: no
+// key, no token, no image bytes or base64, no signed URL, no provider
+// response, no identifiers.
 //
-// Note: this file runs under Deno, not the Vite/TS build. It is excluded
-// from `tsconfig.json` via `include: ["src"]`.
+// Deploy: supabase functions deploy scan-process
+//         (do NOT pass --no-verify-jwt)
 
-// @ts-expect-error — Deno-only import; not resolved during the Vite build.
-import { serve } from 'https://deno.land/std@0.224.0/http/server.ts'
+// The npm specifier is pinned in deno.json's import map (@supabase/server ->
+// npm:@supabase/server@1.4.1) and recorded in deno.lock, so `deno check` and
+// `deno test` resolve and type-check this file. This function lives outside the
+// Vite/tsc build (tsconfig `include` is `src` only), which never sees it.
+import { createSupabaseContext } from '@supabase/server'
+import { handleScanProcess, type CallerContext } from './handler.ts'
+import { createOpenAIVision } from './openai.ts'
 
-type ScanType = 'intake' | 'condition' | 'missing'
+// The real clothing-recognition provider. It reads OPENAI_API_KEY /
+// OPENAI_VISION_MODEL from the environment on each call, so a key added later
+// is picked up on the next invocation. handler.ts only sees the function.
+const analyzeGarment = createOpenAIVision()
 
-type ExtractedField = {
-  label: string
-  value: string
-  confidence: number
+/**
+ * Origins permitted to call this function from a browser.
+ *
+ * Overridable with the ALLOWED_ORIGINS secret (comma-separated) so a new
+ * staging or preview origin does not require a code change. The defaults
+ * cover local development and the existing Pages deployment.
+ */
+function allowedOrigins(): string[] {
+  const configured = Deno.env.get('ALLOWED_ORIGINS')
+  if (configured && configured.trim()) {
+    return configured
+      .split(',')
+      .map((o) => o.trim())
+      .filter(Boolean)
+  }
+  return [
+    'http://127.0.0.1:5174',
+    'http://localhost:5174',
+    'https://sanad-inventory.pages.dev',
+  ]
 }
 
-type Extracted = {
-  fields?: ExtractedField[]
-  detected_condition?: 'excellent' | 'good' | 'fair' | 'poor' | 'broken' | null
-  missing_components?: { component_name: string; severity: 'minor' | 'medium' | 'critical' }[]
-  suggested_lab_asset?: {
-    tag?: string
-    name?: string
-    manufacturer?: string
-    model?: string
-    serial?: string
+async function createContext(req: Request): Promise<CallerContext | null> {
+  const { data, error } = await createSupabaseContext(req, { auth: 'user' })
+  if (error || !data) return null
+
+  // `UserClaims.id` is the normalized user id — @supabase/server derives it as
+  // `jwtClaims.sub`, so it equals the JWT subject by construction. (The former
+  // `?? data.userClaims?.sub` first operand was always undefined: the
+  // normalized claims object has no `sub` field. @ts-nocheck had hidden that.)
+  const userId = data.userClaims?.id
+  if (!userId) return null
+
+  // `data.supabase` is scoped to the caller, so RLS governs every read the
+  // handler performs. `data.supabaseAdmin` is deliberately not passed through:
+  // authorization decisions must never be made with RLS bypassed. The cast
+  // narrows the full SupabaseClient generic to the minimal surface the handler
+  // uses; without it tsc reports "type instantiation is excessively deep".
+  return {
+    supabase: data.supabase as unknown as CallerContext['supabase'],
+    userId,
   }
 }
 
-const corsHeaders: Record<string, string> = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers':
-    'authorization, x-client-info, apikey, content-type',
-}
-
-function aggregateConfidence(extracted: Extracted): number {
-  const fields = extracted.fields ?? []
-  if (fields.length === 0) return 0.85
-  const sum = fields.reduce(
-    (acc, f) => acc + Math.max(0, Math.min(1, f.confidence)),
-    0,
-  )
-  return Math.round((sum / fields.length) * 1000) / 1000
-}
-
-// ── Deterministic mock results ────────────────────────────────────────
-// TODO: replace this map with a real vision provider call. Read the
-// uploaded image from Supabase Storage (lab-asset-scans bucket), send it
-// to the provider, and shape the response into `Extracted`.
-const mockResults: Record<ScanType, Extracted> = {
-  intake: {
-    fields: [
-      { label: 'Manufacturer', value: 'Eppendorf',  confidence: 0.94 },
-      { label: 'Model',        value: 'MX-9',       confidence: 0.89 },
-      { label: 'Serial',       value: '87XJ-3401K', confidence: 0.72 },
-      { label: 'Asset class',  value: 'Centrifuge', confidence: 0.91 },
-    ],
-    detected_condition: 'good',
-    suggested_lab_asset: {
-      tag: 'LA-INTAKE',
-      name: 'Centrifuge (intake-detected)',
-      manufacturer: 'Eppendorf',
-      model: 'MX-9',
-      serial: '87XJ-3401K',
-    },
-  },
-  condition: {
-    fields: [
-      { label: 'Visible wear',      value: 'Moderate',           confidence: 0.81 },
-      { label: 'Surface damage',    value: 'None',               confidence: 0.93 },
-      { label: 'Cable integrity',   value: 'Intact',             confidence: 0.86 },
-      { label: 'Calibration label', value: 'Expires 2026-12-15', confidence: 0.74 },
-    ],
-    detected_condition: 'good',
-  },
-  missing: {
-    fields: [
-      { label: 'Components expected', value: '7', confidence: 1.0 },
-      { label: 'Components detected', value: '5', confidence: 0.88 },
-    ],
-    missing_components: [
-      { component_name: 'Power cable', severity: 'minor' },
-      { component_name: 'Spare rotor', severity: 'medium' },
-    ],
-  },
-}
-
-serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
-  }
-  if (req.method !== 'POST') {
-    return new Response(
-      JSON.stringify({ error: 'Method not allowed' }),
-      {
-        status: 405,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
-      },
-    )
-  }
-
-  let body: {
-    scan_type?: ScanType
-    scan_session_id?: string
-    image_path?: string
-    lab_asset_id?: string | null
-  }
-  try {
-    body = await req.json()
-  } catch (err) {
-    return new Response(
-      JSON.stringify({ error: 'Bad request', detail: String(err) }),
-      {
-        status: 400,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
-      },
-    )
-  }
-
-  const scanType: ScanType = body.scan_type ?? 'condition'
-  const extracted = mockResults[scanType] ?? mockResults.condition
-  const confidence = aggregateConfidence(extracted)
-
-  return new Response(
-    JSON.stringify({
-      scan_session_id: body.scan_session_id ?? null,
-      scan_type: scanType,
-      confidence,
-      extracted,
-      generated_at: new Date().toISOString(),
-    }),
-    { headers: { 'Content-Type': 'application/json', ...corsHeaders } },
-  )
-})
+Deno.serve((req: Request) =>
+  handleScanProcess(req, {
+    createContext,
+    allowedOrigins: allowedOrigins(),
+    analyzeGarment,
+  }),
+)

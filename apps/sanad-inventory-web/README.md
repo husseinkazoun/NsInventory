@@ -14,11 +14,13 @@ A minimal, polished app shell that mirrors the Laravel dashboard's visual direct
 - Tailwind CSS 3 with Sanad brand tokens
 - React Router 6 (client-side routing)
 - Lucide icons
-- **Static, typed mock data only** — no backend, no Laravel calls, no Cloudflare yet
+- **Supabase backend** for auth, the lab-asset/scan domain, Storage and the `scan-process` Edge Function — a project is linked locally (`supabase/.temp/`, gitignored). No Laravel calls.
+- **Deployed to Cloudflare Pages** at <https://sanad-inventory.pages.dev>. `sanadinventory.com` still points at the Laravel application; this deployment does not serve it.
+- Mock data remains for the modules not yet ported (see "What is mocked")
 
 ### Routes
 
-`/login` is public; everything else is wrapped in `AuthGuard` (transparent in demo mode, real session-gated in Supabase mode).
+`/login` is public; everything else is wrapped in `AuthGuard` then `OrgGate` (both transparent in demo mode; session-gated and organization-gated in Supabase mode).
 
 | Route | Status |
 |---|---|
@@ -54,8 +56,8 @@ The app boots in one of two modes depending on env vars:
 
 | Mode | Trigger | Behaviour |
 |---|---|---|
-| **Demo** | `VITE_SUPABASE_URL` and/or `VITE_SUPABASE_ANON_KEY` unset | Mock data renders, `AuthGuard` is bypassed, header shows the placeholder "Admin" identity, the `/login` page surfaces a yellow "demo mode" notice. Used for offline previews and design reviews. |
-| **Supabase** | Both env vars set | Routes are guarded by `AuthGuard`; unauthenticated visits redirect to `/login`. The header reflects the real signed-in profile and adds a sign-out button. |
+| **Demo** | `VITE_SUPABASE_URL` and/or `VITE_SUPABASE_ANON_KEY` unset | Mock data renders, `AuthGuard` and `OrgGate` are bypassed, header shows the placeholder "Admin" identity, the `/login` page surfaces a yellow "demo mode" notice. Used for offline previews and design reviews. |
+| **Supabase** | Both env vars set | Routes are guarded by `AuthGuard` then `OrgGate`; unauthenticated visits redirect to `/login`. The header reflects the real signed-in profile, the active organization, and a sign-out button. This is the mode the Cloudflare Pages deployment runs in. |
 
 To enable Supabase mode locally:
 
@@ -67,11 +69,177 @@ npm run dev
 
 `.env.local` is gitignored.
 
-### Cloudflare Pages note
+### Cloudflare Pages
+
+This app is deployed at <https://sanad-inventory.pages.dev>. The Pages project uses **root directory** `apps/sanad-inventory-web`, build command `npm run build`, output directory `dist`, and `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` set under Environment variables.
+
+`sanadinventory.com` is **not** attached to this Pages project — that domain serves the Laravel application from the VM and is out of scope for the transition until an explicit cutover is agreed.
 
 `public/_redirects` ships with the SPA fallback rule `/*  /index.html  200`. Vite copies it verbatim into `dist/_redirects` at build time, so Cloudflare Pages resolves deep-link refreshes (e.g. `/lab-assets/:id`, `/scan/start`) to the SPA shell out of the box — no extra `wrangler.toml` or `_routes.json` needed.
 
-When wiring the Pages project, set its **root directory** to `apps/sanad-inventory-web`, build command to `npm run build`, output directory to `dist`, and add `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` under Environment variables.
+---
+
+## Organization scoping (multi-tenancy)
+
+Every organization-scoped read and write resolves its `organization_id` from the signed-in user's `organization_members` rows. There is **no development-org fallback** — an unresolved organization is an error, never a default.
+
+- `src/lib/org.ts` — framework-free resolver. `resolveCurrentOrgId()` is what the query layer awaits; `resolveOrgState()` returns the same answer as data so the UI can render one screen per state. Memberships are cached per user id and dropped on any auth state change other than `TOKEN_REFRESHED`.
+- `src/lib/orgContext.tsx` — `OrgProvider` / `useCurrentOrg()`. Reads the *same* module state, so the UI and the query layer can never disagree about the active tenant.
+- `src/components/auth/OrgGate.tsx` — renders the app only once an organization is resolved.
+
+| State | Behaviour |
+|---|---|
+| Exactly one organization | Resolved automatically; header shows its name as a plain label |
+| Multiple organizations | Blocking picker; the choice persists in `localStorage` keyed by user id, and a header `<select>` switches tenant. Switching remounts the routed tree so data from the previous org is discarded. A stored id that is no longer a valid membership falls back to the picker, never to an arbitrary org. |
+| No membership | Dedicated "No organization access" screen with a sign-out action — distinguishable from an org that is genuinely empty |
+| Session expired | See "Session expiry" below |
+
+Reads are filtered by `organization_id` **in addition to** RLS. RLS alone returns the union of every organization a user belongs to, which is wrong for a multi-org user — the UI shows one active tenant at a time.
+
+### Session expiry
+
+An expired credential and a deliberate sign-out both end as "no session", and supabase-js emits the same `SIGNED_OUT` event for each with no reason attached. Telling them apart takes an explicit signal:
+
+1. `isAuthExpiryError()` classifies PostgREST `PGRST301`, HTTP 401 and JWT-expiry messages. `asAppError()` converts those into a typed `SessionExpiredError` and drops the local session (`scope: 'local'` — a server round trip would itself 401 on a dead token).
+2. `SessionProvider`'s `SIGNED_OUT` handler is the **single** place that decides why the session ended. A `manualSignOutInFlight` flag, set only by `signOut()` and released in a `finally`, marks deliberate sign-outs. Anything else — including a background token refresh that fails while the tab is idle, which no query-layer code can observe — records the notice.
+3. `authNotice.ts` holds that one-shot notice in `sessionStorage`, so it survives the hard reload that a boot-time refresh failure causes. It is cleared on read.
+4. `AuthGuard` (and `OrgGate`, for the narrow window where it resolves first) redirects to `/login`, preserving the attempted destination *including its query string* in router state.
+5. `/login` consumes the notice and shows a fixed generic string: **"Your session has expired. Please sign in again."** No Supabase, JWT or PostgREST text ever reaches the page.
+
+Sign-in failures are also reported generically — the Supabase message distinguishes "user not found" from "wrong password", which discloses which emails are registered. This matches the Laravel app's generic login error (commit `5857f61`).
+
+Other pages still render `error.message` from failed queries directly. For an expired session that message is the typed, generic one; other PostgREST failures can still surface raw text there. Narrowing that is not yet done.
+
+---
+
+## Authorization (role-based RLS)
+
+`supabase/migrations/20260725161641_role_based_rls.sql` makes the database enforce the role matrix. Before it, every policy was a bare `is_org_member(organization_id)` — membership alone granted read, write *and* delete, so a `viewer` had exactly an `owner`'s rights and `org_role` was decorative.
+
+| Role | Read org data | Create / update | Delete |
+|---|:--:|:--:|:--:|
+| `owner`  | ✅ | ✅ | ✅ |
+| `admin`  | ✅ | ✅ | ✅ |
+| `member` | ✅ | ✅ | ❌ |
+| `viewer` | ✅ | ❌ | ❌ |
+
+Also enforced: `anon` gets nothing; no role reaches another organization; `activity_log` is append-only (no UPDATE/DELETE policy *or* privilege for anyone); organizations, profiles and memberships are read-only from the Data API.
+
+**Helpers.** `public.is_org_member()` was `SECURITY DEFINER` in an exposed schema, so `anon` could call it at `/rest/v1/rpc`. It is dropped and replaced by four helpers in the unexposed `private` schema — `readable_org_ids()`, `writable_org_ids()`, `deletable_org_ids()`, `visible_profile_ids()` — each `security definer`, `set search_path = ''`, `EXECUTE` revoked from `PUBLIC`/`anon` and granted only to `authenticated`.
+
+They return a **set of organization ids** rather than taking an id and returning boolean. That shape is what makes `organization_id in (select private.readable_org_ids())` an InitPlan evaluated once per statement. The old `is_org_member(organization_id)` took row data as an argument, so it necessarily ran per row — the `auth_rls_initplan` advisor warning. Wrapping the old form in a subselect would not have fixed it; the signature had to change.
+
+**Cross-organization moves.** RLS cannot express column immutability — `WITH CHECK` sees only the new row, so a user belonging to two organizations could move a row between them and both states would satisfy the policy. A `BEFORE UPDATE` trigger (`private.forbid_org_change()`) enforces it for every role, `service_role` included.
+
+**Grants.** The migration revokes all table privileges from `public`, `anon` and `authenticated`, then grants back exactly what the matrix needs. Exposure no longer depends on project-creation defaults.
+
+Frontend role checks (`src/lib/permissions.ts`, `RequireWrite`) hide actions a role cannot perform. They are UX only — the database refuses the write either way.
+
+### Staging
+
+`supabase/staging/` is a reusable bootstrap package for a **separate** Supabase staging project: four fake role accounts created through the Auth Admin API, one clearly-named staging organization, minimal representative data, and a narrowly-scoped teardown. It is dry-run by default and refuses to run unless you name the target project explicitly and confirm intent.
+
+```bash
+npm run staging:bootstrap             # dry run
+npm run staging:bootstrap -- --apply
+npm run staging:teardown -- --apply
+```
+
+Full walkthrough — project creation, Auth settings, migration order, verification per role, advisor re-run — in [`supabase/staging/README.md`](./supabase/staging/README.md). The service-role key is read from the environment and never committed.
+
+#### `scan-process` version 1 — authorization smoke tests (2026-07-26, historical)
+
+> Kept as the record of how the **authorization model** was verified live. It
+> describes **version 1**, the pre-provider build, which is no longer the
+> deployed version — see *version 5* below for what staging runs now.
+
+On **2026-07-26** the `scan-process` Edge Function was deployed to the dedicated Sanad Inventory **staging** project (ref `wkiirgvfijzibczwglzi`) and verified live.
+
+| Field | Value |
+|---|---|
+| Status | **ACTIVE** |
+| Version | **1** |
+| Function ID | `dd61a999-98d3-4bf9-8c3f-1eeb7ac2e928` |
+| JWT verification | **Enabled** (`verify_jwt = true`) — confirmed live: a request with no `Authorization` header is rejected by the platform gateway before the handler runs |
+
+Smoke tests against the deployed function, using disposable staging-only records that were removed afterward, all passed:
+
+- **Unauthenticated** request → 401
+- **Viewer** → 403, and a **cross-organization** member → 403
+- **Authorized** owner / admin / member → 200
+- The response carries the **simulation marker** (`simulated: true` — correct for the pre-provider build; version 5 returns `simulated: false`)
+- **CORS** allowlist honoured — the two configured localhost origins are echoed, an unlisted origin is not
+- **Two separate intake scans** produce distinct tags with no collision
+- **Retry** of an intake session produces no duplicate asset
+- **Cleanup** removed every seeded record, leaving no residue
+
+That build (**version 1**) returned simulated results and performed no real image analysis — no vision provider was connected at the time. The frontend was **not** deployed and the production project was **not** accessed or modified.
+
+#### `scan-process` version 5 — provider-enabled deployment (2026-07-26, current)
+
+The provider implementation **is deployed to staging**. It supersedes version 1: the function now performs real clothing recognition and returns `simulated: false`.
+
+| Field | Value |
+|---|---|
+| Project | **staging** `wkiirgvfijzibczwglzi` — the production project was not accessed |
+| Status | **ACTIVE** |
+| Version | **5** — the counter includes intermediate redeploys not recorded here |
+| Function ID | `dd61a999-98d3-4bf9-8c3f-1eeb7ac2e928` |
+| Deployed at | **2026-07-26 04:51:58 UTC** |
+| Source commit | `608919d` — *Add real clothing vision analysis to scan processing* |
+| Command | `supabase functions deploy scan-process --project-ref wkiirgvfijzibczwglzi --use-api` (Docker unavailable; **no** `--no-verify-jwt`, **no** `--prune`) |
+| JWT verification | **Enabled** — `verify_jwt: true` read back from the Management API, not merely asserted in `config.toml` |
+
+Post-deployment checks, all unauthenticated and free (no provider request was made):
+
+- **No `Authorization` header** → `401 {"code":"UNAUTHORIZED_NO_AUTH_HEADER"}`
+- **Malformed bearer** → `401 {"code":"UNAUTHORIZED_INVALID_JWT_FORMAT"}`
+
+  Both are *platform gateway* codes rather than the handler's own `{"error":"Unauthorized"}`, which is what confirms the gateway rejects before the handler runs.
+- **The function boots and the handler executes** — a CORS preflight echoes `Access-Control-Allow-Origin` for an allowed origin and withholds it for an unlisted one. Only the handler's own allowlist can draw that distinction, so `handler.ts` and the new `openai.ts` load and run: the server-side (`--use-api`) bundle resolves correctly.
+
+Required secrets `OPENAI_API_KEY` and `OPENAI_VISION_MODEL` are present in staging (names confirmed; values never read, printed, or changed).
+
+**Not yet exercised end-to-end.** No authenticated scan has been run and no OpenAI request has been made, so `OPENAI_VISION_MODEL` (`gpt-5.6-terra`) is set but still unverified against the live API. A wrong model name surfaces as a provider 4xx carrying the provider's exact message — never a silent model swap, and never a fabricated success. The frontend was **not** deployed, `main` was **not** touched, and no staging data was created.
+
+### Database tests
+
+```bash
+./supabase/tests/run.sh    # 92 assertions   (also: npm run test:db)
+```
+
+Stands up a throwaway Postgres 17 cluster, applies `00_supabase_bootstrap.sql` (local-only scaffolding for `auth.uid()`, `storage.objects` and the API roles) followed by the real migrations, then exercises the policies as `authenticated`/`anon` with a `request.jwt.claims` GUC — the same mechanism PostgREST uses. Docker is not required; a local Postgres server is (`brew install postgresql@17`). If none is found the script exits 2 and reports SKIP rather than passing.
+
+Covered: anonymous denied · viewer read-only · member CRUD-minus-delete · admin and owner full CRUD · cross-organization isolation for every role · `organization_id` reassignment refused (including for a user who owns *both* organizations, the only case the trigger and not RLS catches) · membership/profile/organization mutation unavailable · activity log append-only · storage matching the matrix · revoked membership losing access immediately · plus 17 advisor-equivalent assertions.
+
+## Tests
+
+```bash
+npm test          # vitest run
+npm run test:watch
+```
+
+Vitest + jsdom + Testing Library. 139 tests across `src/lib/org.test.ts` (resolver), `src/lib/session.test.tsx` (expiry, notice, redirect), `src/lib/permissions.test.ts` (role capability matrix), `src/lib/queries/scans.test.ts` (the `scan-process` contract — refusals, response-backed errors relaying the function's safe `{ error }` text, unreadable error bodies falling back to the generic retry line, malformed responses, persistence failures, and the configured-mode honesty invariant that rejects anything not marked `simulated: false`), `src/test/webStorage.test.ts` (Storage conformance) `supabase/staging/plan.test.mjs` (staging bootstrap plan and guards) and `supabase/staging/nodeVersion.test.mjs` (Node 22+ preflight, including real subprocess runs on an older runtime) and `src/pages/Login.test.tsx` (the first-sign-in redirect race). Vitest runs with `globals: false`, so tests import `describe`/`it`/`expect` explicitly and `tsc --noEmit` typechecks them with no extra ambient config; DOM cleanup is registered by hand in `src/test/setup.ts`.
+
+Verified on Node 22.22.1, 24.14.0 and 25.9.0. On Node 20 the staging `nodeVersion.test.mjs` preflight cases fail by design — commit `95066ad` requires Node 22 for the staging scripts, and those cases assert that gate — while the rest of the suite passes (136/139).
+
+### Node's built-in Web Storage
+
+Node 22 introduced `localStorage` / `sessionStorage` globals; from Node 25 they are present by default. They are file-backed, and without a valid `--localstorage-file` Node still exposes the globals but they are hollow — `typeof localStorage.clear === 'undefined'`. Under Vitest's jsdom environment `window === globalThis`, so Node's global shadows jsdom's spec-compliant implementation and every test that touches storage fails with `window.localStorage.clear is not a function`.
+
+`src/test/webStorage.ts` replaces those globals with a real implementation of the WHATWG Storage interface, but only when the existing one does not survive a set/get/remove round trip — so on Node 20, where jsdom's own Storage is used, nothing is touched. `src/test/webStorage.test.ts` asserts the conformance details the suite depends on: `getItem` returning `null` rather than `undefined`, key/value stringification, insertion-ordered `key(index)`, and `localStorage` being independent of `sessionStorage`.
+
+> Node still prints ``Warning: `--localstorage-file` was provided without a valid path`` once per worker on Node ≥ 25. That is Node reporting that *its* storage is unusable — which is exactly why the replacement exists. It is expected and does not indicate a test failure.
+
+> **These are mocked tests, not live verification.** `src/test/fakeSupabase.ts` replaces the Supabase client with a controllable fake. They exercise the resolver's and the session layer's own logic. They do **not** verify RLS policies, real PostgREST behaviour, real token refresh, or Storage — all of which still require a run against a live Supabase project. See "What is not yet verified live".
+
+Covered: single org resolves automatically · multiple orgs require explicit selection · a valid saved selection is restored · a revoked saved org falls back to the picker · no membership yields the no-access state · expiry produces the generic notice · a deliberate sign-out does not · membership data cannot cross between users · the attempted route survives the redirect.
+
+The suite was mutation-checked — each of these deliberate breakages causes failures, so the assertions are not passing vacuously: silently selecting the first org; accepting a stored org without validating membership; treating every sign-out as an expiry; dropping the query string from the preserved route; re-reading the session inside the membership fetch instead of using the resolved id; and, in the Storage replacement, a no-op `setItem`, a no-op `clear()`, or `getItem` returning `undefined` instead of `null`.
+
+---
+
+> **Setting up a new user is now a required step.** Because there is no development fallback, a freshly created Supabase user with no `organization_members` row sees the "No organization access" screen and no data — that is the resolver working, not a bug. Insert the `profiles` + `organization_members` rows as described at the bottom of [`supabase/seed.sql`](./supabase/seed.sql).
 
 ---
 
@@ -106,22 +274,64 @@ RLS on `storage.objects` parses the leading 36-character UUID via `public.scan_o
 
 Source: `supabase/functions/scan-process/index.ts` (Deno; lives outside the React TS build).
 
-Right now it returns deterministic mock JSON keyed by scan type — **no real AI provider is connected**. The TODO at the top of the file marks where to plug in a vision provider (OpenAI / Anthropic Claude Vision / Gemini / etc.).
+It performs **real clothing recognition**. After the full authorization sequence passes, it downloads the private image through the caller-scoped client and sends it to the OpenAI Responses API with strict Structured Outputs (`openai.ts`, the only module that talks to a provider). Every successful response carries `simulated: false`; a provider failure becomes an error status and **never** a fabricated success. The client refuses any configured-mode response that does not assert `simulated: false`, marks the `photo_scans` row `failed`, and surfaces a retryable error — so a placeholder can never be persisted as a completed scan or become an asset.
 
-Deploy when ready:
+Simulated fixtures now exist in exactly one place: the frontend's **demo mode** (`src/lib/queries/scans.ts`), reachable only when no Supabase env vars are configured. They are clothing values labelled `(demo)`, carry `simulated: true`, and the UI shows a persistent *"Simulated analysis — no image AI was used"* banner for them.
+
+> **Deployed to staging** as **version 5** on 2026-07-26 (project `wkiirgvfijzibczwglzi`), with `OPENAI_API_KEY` and `OPENAI_VISION_MODEL` set as function secrets — see *`scan-process` version 5* above. Without the key the function returns 503 *"Image analysis is not configured"* rather than falling back to fabricated output.
+
+Security, following the current Supabase "Securing Edge Functions" guidance:
+
+- `createSupabaseContext(req, { auth: 'user' })` validates the caller's JWT and yields a client scoped to them, so **RLS enforces tenancy**. A service-role client is never used for authorization — with RLS bypassed, a cross-organization identifier would simply resolve and the check would pass.
+- `verify_jwt = true` is pinned for this function in `config.toml`. Do **not** deploy with `--no-verify-jwt`.
+- The handler verifies the `scan_sessions` and `photo_scans` rows exist and share one organization, that `image_path` names that same organization *and* session, and that any `lab_asset_id` belongs to it. Role must be `owner`, `admin` or `member`; **`viewer` gets 403**.
+- `scan_type`, UUIDs, `image_path` shape and body size are strictly validated; every rejection returns one generic message that names no field or value.
+- CORS is an allowlist (`ALLOWED_ORIGINS`, defaulting to local + the Pages origin) with `Vary: Origin`; an unlisted origin receives no `Access-Control-Allow-Origin`.
+- Nothing is logged — no tokens, image bytes, or identifiers.
+
+`handler.ts` holds the logic and takes its dependencies as arguments — including `analyzeGarment`, so a mock provider stands in for OpenAI. The suite runs **67 cases** (`handler_test.ts` + `openai_test.ts`) without a server, a network call, or a provider credential: `openai_test.ts` injects both `fetch` and `env`, so no test ever reaches OpenAI or spends credits. `index.ts` is the thin entry that supplies the real context factory and the real provider.
+
+**Dependencies and tasks.** The function has its own `deno.json`, isolated from the app's npm workspace:
+
+- `"nodeModulesDir": "none"` — Deno never creates a `node_modules` and never walks up to the app's `package.json` (React, Vite, Vitest, Tailwind).
+- `@supabase/server` is pinned to the exact reviewed version **`1.4.1`** through the import map (`"@supabase/server": "npm:@supabase/server@1.4.1"`); `index.ts` imports the mapped bare specifier, not a floating `npm:@supabase/server`.
+- `deno.lock` is committed and records the full resolution (it pulls a transitive `@supabase/supabase-js@2.110.8`). The `test` and `check` tasks run with `--frozen`, so a drifted lock fails the task instead of being silently rewritten. `--frozen` is at the task level, not global, so it does not interfere with `supabase functions deploy`.
+
+Run from `supabase/functions/scan-process/`:
+
+```bash
+deno task test     # deno test --frozen handler_test.ts   (31 tests)
+deno task check    # deno check --frozen index.ts handler_test.ts
+```
+
+Deploy when ready — do **not** pass `--no-verify-jwt`:
 
 ```bash
 supabase functions deploy scan-process
 ```
 
-If the function is **unreachable** at runtime, the React app falls back to the same offline-mock payload and surfaces a yellow "Using offline mock" banner above the review results. The `photo_scans` row is marked `failed` with the error message so the issue is traceable.
+**Client failure contract.** In a **configured environment there is no fallback at all** — the offline mock was removed when the real provider landed. Every failure is surfaced, because telling a user their scan succeeded when it did not is worse than an error. Classification uses the `@supabase/supabase-js` error classes:
+
+| Invocation outcome | Client behaviour |
+|---|---|
+| `FunctionsHttpError`, status **401** / **403** | Throws `ScanAuthorizationError`. The row is **not** marked failed — a refusal is a real answer about permissions, not a failed analysis |
+| `FunctionsHttpError`, **any other status** | Row marked `failed`; throws `ScanProcessingError` carrying the function's own `{ error }` text when the body is readable JSON, else a generic retry message |
+| `FunctionsFetchError` (network) / `FunctionsRelayError` (relay) | Row marked `failed`; throws `ScanProcessingError` |
+| 2xx with an empty or malformed body (not an object, or `extracted` not an object) | Row marked `failed`; throws `ScanProcessingError` |
+| 2xx that does not assert `simulated: false` (says `true`, or omits the marker) | Row marked `failed`; throws `ScanProcessingError`. See the honesty invariant below |
+| 2xx parsed, but the follow-up `photo_scans` update fails | **Surfaced** — the database error is thrown. A persistence failure after a successful analysis is not a provider outage |
+
+**Honesty invariant.** A configured-mode response must state that it is genuine: `simulated: false`, explicitly. `simulated: true` and an absent marker are both rejected, because silence is not consent — a caller must opt *in* to claiming the values came from the image. Such a response is never persisted as `completed` and can never become an asset; `completeScanSession` re-checks the same invariant (`!== false`) as defence in depth. Simulated results exist only in demo mode, where no Supabase is configured and the invariant does not apply.
+
+The Edge Function invocation and the `photo_scans` persistence are handled in separate phases; a failure in either is surfaced, and neither can yield fabricated data.
 
 ### What's still mocked after this commit
 
 - Dashboard KPIs (`mockData.kpis`)
 - Products / Orders / Purchases / Quotations / Directory / Settings pages
 - `LabAssetDetail` Inspection / Missing Components / Recent Activity panels (writes happen in Supabase mode, but the panels keep reading from `mockData` until a later commit wires them to real tables)
-- No real AI vision provider
+- Demo-mode scan fixtures (`demoFixtures` in `src/lib/queries/scans.ts`) — clothing values labelled `(demo)`, reachable only with no Supabase configured. The vision provider itself is real; see *Edge Function — `scan-process`*, including the deployment prerequisites
+- The review screen is **read-only** — it has no editing controls, so a wrong AI value cannot be corrected before saving. The notice says so plainly ("go back and choose a clearer photo") rather than asking the reviewer to correct fields they cannot edit
 
 ### Other scripts
 
@@ -158,14 +368,45 @@ Phase 2 brought a real Supabase backend online in code; provisioning, the rest o
 - `scan-process` Edge Function (Deno) returning deterministic mock JSON keyed by scan type
 - Cloudflare Pages SPA fallback via `public/_redirects`
 
+- Current-organization resolver (`src/lib/org.ts` + `src/lib/orgContext.tsx` + `components/auth/OrgGate.tsx`) — organization scope comes from the signed-in user's `organization_members` rows, with no development fallback
+
+**Already deployed:**
+- A Supabase project **is** linked (locally, via `supabase/.temp/linked-project.json`, which is gitignored — the project ref is deliberately not committed). Migrations, seed, Storage bucket and the `scan-process` function target it.
+- A Cloudflare Pages project **is** live at <https://sanad-inventory.pages.dev>, built from `apps/sanad-inventory-web` with `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` set in the Pages environment.
+- `sanadinventory.com` is **not** served by this app — it still resolves to the Laravel application on the VM, and this transition must not change that.
+
 **Not yet:**
-- No live Supabase project is provisioned — the migrations and seed are ready to run, but no `<project-ref>` has been linked. Demo mode is the only mode that runs today.
-- No Cloudflare Pages project, no DNS for `sanadinventory.com`
-- Dashboard KPIs still render from `mockData.kpis`; the Lab Asset detail panels (Inspection / Missing / Activity) still read from mock helpers
+- Dashboard KPIs still render from `mockData.kpis`; the Lab Asset detail panels (Inspection / Missing / Activity) read live tables but the KPI header does not
 - Products / Orders / Purchases / Quotations / Directory / Settings pages are still mock-only or placeholder
-- `DEV_ORG_ID` is hardcoded in `queries/labAssets.ts` and `queries/scans.ts` — to be replaced with a `useCurrentOrg()` hook reading from `organization_members`
+- The Laravel clothing workflow (`products.specifications->inventory_mode = 'clothing'`) has no Supabase equivalent yet — see [`docs/feature-parity-matrix.md`](../../docs/feature-parity-matrix.md)
 - The `scan-process` Edge Function still returns deterministic mock JSON — no real vision provider (OpenAI / Anthropic Claude Vision / Gemini) is wired
-- No CI/CD, no tests (planned for a later phase), no i18n, no state-management library beyond React local state + URL params
+- No CI/CD, no i18n, no state-management library beyond React local state + URL params. Tests now exist for the organization resolver and session-expiry handling only (see "Tests"); every other module is untested.
+
+### Live verification status
+
+Read-only verification was run against the linked Supabase project on 2026-07-25 via `supabase db query --linked` and direct PostgREST calls. No data, policy, user or remote setting was modified.
+
+**Verified live:**
+
+| Claim | Evidence |
+|---|---|
+| Migrations are applied | All 10 tables present, `relrowsecurity = true` on every one |
+| The resolver's membership query works under RLS | Simulated the real user (`set local role authenticated` + `request.jwt.claims`); the `organization_members ⋈ organizations` join returned the row. `is_org_member()` does not recurse — previously an assumption, now proven |
+| The `organizations!inner` PostgREST embed resolves | The exact select string from `org.ts` returns HTTP 200. Control: a bogus relationship returns HTTP 400 `PGRST200`, so the 200 is meaningful |
+| RLS denies `anon` | Same embed as `anon` returns `[]`, not rows — despite `anon` holding table-level DML grants |
+| `isAuthExpiryError()` matches reality | A malformed and an expired/badly-signed JWT both return **HTTP 401 with `code: "PGRST301"`**. Neither message contains "expired", which is why the classifier keys off the code, not message text |
+| Storage is provisioned | Bucket `lab-asset-scans` exists and is private, with all four `storage.objects` policies |
+| `scan_object_org()` parses the app's path convention | Returns the org UUID for `{org}/{session}/{file}` and `null` for a non-UUID prefix |
+| `scan-process` is deployed | ACTIVE, version 2 |
+| Tables are exposed to the Data API | `anon`/`authenticated`/`service_role` hold full DML grants. The project predates the 2026-05-30 opt-in change, so no explicit `GRANT`s were needed — see the caveat below |
+
+**Still not verified live:**
+
+- That a background token-refresh failure emits `SIGNED_OUT` rather than another event. This is client-side supabase-js behaviour and cannot be observed from the database.
+- An actual authenticated Storage upload under the `{organization_id}/…` path. The bucket, policies and path parser are confirmed, but performing an upload would write data.
+- The app running end-to-end in Supabase mode — there is still no `.env.local`.
+
+> **Data API caveat.** Nothing in the migrations grants anything; the tables are reachable only because this project predates Supabase's switch to opt-in Data API exposure (changelog 2026-04-28, default for projects created after 2026-05-30 — this project was created 2026-05-18, an 11-day margin). If the project is ever recreated, every table becomes invisible to the client with a symptom that looks nothing like a grants problem. Add explicit `GRANT`s in the RLS slice.
 
 ---
 
@@ -204,12 +445,15 @@ apps/sanad-inventory-web/
 │   │   ├── format.ts                ← Intl number / relative date
 │   │   ├── supabaseClient.ts        ← singleton Supabase client (null in demo mode) + currentUserId()
 │   │   ├── session.tsx              ← <SessionProvider> + useSession() + signOut()
+│   │   ├── org.ts                   ← current-organization resolver + typed errors + auth-expiry classifier
+│   │   ├── orgContext.tsx           ← <OrgProvider> + useCurrentOrg() over the same module state
 │   │   └── queries/
 │   │       ├── labAssets.ts         ← listLabAssets / getLabAsset / createLabAsset (mock fallback)
 │   │       └── scans.ts             ← startScanSession / uploadScanPhoto / processScanPhoto /
 │   │                                   completeScanSession (mock fallback + offline-mock recovery)
 │   ├── components/
 │   │   ├── auth/AuthGuard.tsx       ← demo-mode bypass, Supabase-mode session gate
+│   │   ├── auth/OrgGate.tsx         ← org picker / no-membership / expired-session screens
 │   │   ├── brand/BrandMark.tsx
 │   │   ├── layout/{AppShell,AppShellLayout,Header,Sidebar}.tsx
 │   │   └── ui/{Badge,Button,EmptyState,PageHeader,QuickActionTile,SectionTitle,StatCard}.tsx

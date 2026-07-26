@@ -13,6 +13,8 @@ import Directory from './pages/Directory'
 import Settings from './pages/Settings'
 import { AppShellLayout } from './components/layout/AppShellLayout'
 import { AuthGuard } from './components/auth/AuthGuard'
+import { OrgGate } from './components/auth/OrgGate'
+import { RequireWrite } from './components/auth/RequireWrite'
 
 export function AppRoutes() {
   return (
@@ -20,11 +22,14 @@ export function AppRoutes() {
       {/* Public */}
       <Route path="/login" element={<Login />} />
 
-      {/* Protected — everything below renders inside <AppShell> */}
+      {/* Protected — AuthGuard proves *who*, OrgGate proves *which tenant*.
+          Nothing organization-scoped renders until both are resolved. */}
       <Route
         element={
           <AuthGuard>
-            <AppShellLayout />
+            <OrgGate>
+              <AppShellLayout />
+            </OrgGate>
           </AuthGuard>
         }
       >
@@ -33,10 +38,24 @@ export function AppRoutes() {
 
         {/* Lab Assets — React Router 6 picks the static /new over /:assetId by specificity. */}
         <Route path="/lab-assets" element={<LabAssets />} />
-        <Route path="/lab-assets/new" element={<LabAssetNew />} />
+        <Route
+          path="/lab-assets/new"
+          element={
+            <RequireWrite>
+              <LabAssetNew />
+            </RequireWrite>
+          }
+        />
         <Route path="/lab-assets/:assetId" element={<LabAssetDetail />} />
 
-        <Route path="/scan/start" element={<ScanStart />} />
+        <Route
+          path="/scan/start"
+          element={
+            <RequireWrite>
+              <ScanStart />
+            </RequireWrite>
+          }
+        />
 
         <Route path="/products" element={<Products />} />
         <Route path="/orders" element={<Orders />} />

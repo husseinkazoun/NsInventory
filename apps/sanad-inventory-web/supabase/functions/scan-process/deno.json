@@ -1,0 +1,13 @@
+{
+  "//": "Scoped to this function. `nodeModulesDir: none` keeps Deno from creating a node_modules or walking up to the app's package.json (React/Vite/Vitest/Tailwind); its own dependencies are pinned here, not floating in index.ts. `@supabase/server` is pinned to an exact, reviewed version through the import map, and `deno.lock` (committed) records the full resolution. The `test` and `check` tasks run with `--frozen` so a drifted lock fails instead of being silently rewritten. `--frozen` is applied at the task level rather than globally so it never interferes with `supabase functions deploy`.",
+  "nodeModulesDir": "none",
+  "lock": true,
+  "imports": {
+    "@supabase/server": "npm:@supabase/server@1.4.1",
+    "@std/assert": "jsr:@std/assert@1"
+  },
+  "tasks": {
+    "test": "deno test --frozen handler_test.ts openai_test.ts",
+    "check": "deno check --frozen index.ts handler_test.ts openai_test.ts"
+  }
+}

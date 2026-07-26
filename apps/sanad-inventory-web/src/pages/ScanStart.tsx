@@ -25,6 +25,23 @@ import {
   type ProcessResponse,
   type ScanType,
 } from '../lib/queries/scans'
+import {
+  GARMENT_REVIEW_FIELDS,
+  conditionFromExtraction,
+  confidenceFromExtraction,
+  draftFromExtraction,
+  needsReviewKeys,
+  type AssetConditionValue,
+  type GarmentDraft,
+} from '../lib/clothing'
+
+const CONDITION_CHOICES: AssetConditionValue[] = [
+  'excellent',
+  'good',
+  'fair',
+  'poor',
+  'broken',
+]
 
 type Step = 'type' | 'capture' | 'review' | 'done'
 
@@ -86,10 +103,24 @@ export default function ScanStart() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [imagePath, setImagePath] = useState<string | null>(null)
 
+  const [photoScanId, setPhotoScanId] = useState<string | null>(null)
+
   const [extracted, setExtracted] = useState<ProcessResponse | null>(null)
+  // The reviewer's working copy. Seeded from the AI extraction, then edited.
+  // Null until an analysis with a clothing payload arrives; a demo fixture or
+  // a non-clothing response leaves the review step read-only as before.
+  const [draft, setDraft] = useState<GarmentDraft | null>(null)
+  const [condition, setCondition] = useState<AssetConditionValue | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [createdAssetId, setCreatedAssetId] = useState<string | null>(null)
+
+  function editDraft<K extends keyof GarmentDraft>(
+    key: K,
+    value: GarmentDraft[K],
+  ) {
+    setDraft((d) => (d ? { ...d, [key]: value } : d))
+  }
 
   // Revoke the object URL when the preview changes / unmounts.
   useEffect(() => {
@@ -99,8 +130,15 @@ export default function ScanStart() {
   }, [previewUrl])
 
   // Kick off the scan-process call when entering the review step.
+  //
+  // `extracted` is deliberately NOT a dependency. It used to be, and setting
+  // it inside `.then` re-ran the effect, whose cleanup set `cancelled = true`
+  // for the in-flight closure — so the `.finally` that clears `busy` was
+  // skipped and the save button could stay disabled reading "Saving…" after a
+  // perfectly successful analysis. Keying on the step alone means the effect
+  // runs once per entry into review, which is what it was always meant to do.
   useEffect(() => {
-    if (step !== 'review' || extracted !== null) return
+    if (step !== 'review') return
     let cancelled = false
     setBusy(true)
     setError(null)
@@ -111,7 +149,15 @@ export default function ScanStart() {
       labAssetId,
     })
       .then((r) => {
-        if (!cancelled) setExtracted(r)
+        if (cancelled) return
+        setExtracted(r)
+        // Seed the editable draft from the FULL extraction, not from
+        // `fields` — the latter omits anything the model could not read, and
+        // those are exactly the boxes the reviewer needs to fill in.
+        if (r.clothing) {
+          setDraft(draftFromExtraction(r.clothing))
+          setCondition(conditionFromExtraction(r.clothing))
+        }
       })
       .catch((err: unknown) => {
         if (cancelled) return
@@ -123,13 +169,25 @@ export default function ScanStart() {
     return () => {
       cancelled = true
     }
-  }, [step, extracted, scanSessionId, imagePath, scanType, labAssetId])
+  }, [step, scanSessionId, imagePath, scanType, labAssetId])
 
   const continueLabel = useMemo(() => {
     if (scanType === 'intake') return 'Create Asset'
     if (scanType === 'missing') return 'Save Findings'
     return 'Save Inspection'
   }, [scanType])
+
+  // Derived from the ORIGINAL extraction, not the draft: the badge describes
+  // how confident the model was in what it read, and that does not change
+  // because a human has since corrected the box.
+  const confidences = useMemo(
+    () => confidenceFromExtraction(extracted?.clothing),
+    [extracted],
+  )
+  const flagged_ = useMemo(
+    () => needsReviewKeys(extracted?.clothing),
+    [extracted],
+  )
 
   function pickFile(f: File | null) {
     setError(null)
@@ -149,7 +207,10 @@ export default function ScanStart() {
     setFile(null)
     setPreviewUrl(null)
     setImagePath(null)
+    setPhotoScanId(null)
     setExtracted(null)
+    setDraft(null)
+    setCondition(null)
     setError(null)
     setBusy(false)
     setCreatedAssetId(null)
@@ -159,7 +220,11 @@ export default function ScanStart() {
     setError(null)
     if (step === 'capture') setStep('type')
     else if (step === 'review') {
+      // Discards the edits along with the analysis: going back means a new
+      // photo, so keeping a draft tied to the previous one would be wrong.
       setExtracted(null)
+      setDraft(null)
+      setCondition(null)
       setStep('capture')
     }
   }
@@ -183,11 +248,11 @@ export default function ScanStart() {
     setError(null)
     try {
       if (isSupabaseConfigured && file && scanSessionId) {
-        const { imagePath: uploadedPath } = await uploadScanPhoto({
-          scanSessionId,
-          file,
-        })
+        const { imagePath: uploadedPath, photoScanId: uploadedId } =
+          await uploadScanPhoto({ scanSessionId, file })
         setImagePath(uploadedPath)
+        // Recorded so the saved garment can point at the photo it came from.
+        setPhotoScanId(uploadedId)
       }
       setStep('review')
     } catch (err: unknown) {
@@ -207,6 +272,12 @@ export default function ScanStart() {
         scanType,
         labAssetId,
         extracted,
+        // The reviewer's corrected values, not the AI's originals. The
+        // original extraction still rides along inside `extracted` and is
+        // stored separately for audit.
+        garment: draft,
+        condition,
+        photoScanId,
       })
       setCreatedAssetId(finalAssetId)
       setStep('done')
@@ -426,19 +497,56 @@ export default function ScanStart() {
             {isSupabaseConfigured ? ' from scan-process.' : ' (demo fixture).'}
           </p>
 
-          {extracted?.usedOfflineMock && (
+          {/*
+            Demo mode only. In a configured environment `processScanPhoto`
+            rejects anything not marked `simulated: false`, so a fabricated
+            result can never reach this screen — but the notice stays, because
+            the demo build renders the same component and must say plainly that
+            the values are fixed placeholders.
+          */}
+          {extracted?.simulated && (
             <div
               role="status"
-              className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+              data-testid="simulated-notice"
+              className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"
             >
               <AlertTriangle
                 className="h-4 w-4 shrink-0 text-amber-600"
                 aria-hidden="true"
               />
               <span>
-                <strong>Using offline mock.</strong> The scan-process function was
-                unreachable. Results below are placeholder data — re-run the scan
-                to retry.
+                <strong>Simulated analysis — no image AI was used.</strong> The
+                values below are fixed placeholders and are not derived from
+                your photo. They are safe to review but must not be treated as
+                a real inspection result.
+              </span>
+            </div>
+          )}
+
+          {/*
+            Genuine AI result: the values ARE derived from the photo, but the
+            model can be wrong. This screen is read-only — there are no editing
+            controls yet — so the notice must not tell the reviewer to "correct"
+            a field they cannot change. The only remedies actually available are
+            to go back for a clearer photo, or to fix the asset after saving.
+            Say exactly that until an edit workflow exists.
+          */}
+          {extracted && extracted.simulated === false && (
+            <div
+              role="status"
+              data-testid="ai-review-notice"
+              className="mt-4 flex items-start gap-2 rounded-lg border border-ns-blue/30 bg-ns-blue-tint px-3 py-2 text-xs text-ns-navy"
+            >
+              <AlertTriangle
+                className="h-4 w-4 shrink-0 text-ns-blue"
+                aria-hidden="true"
+              />
+              <span>
+                <strong>AI suggestions — check before saving.</strong> These
+                values were read from your photo by AI and can be wrong. Review
+                every field and correct anything that is wrong before saving.
+                Anything the AI could not read is left blank for you to fill
+                in — or leave blank if you do not know.
               </span>
             </div>
           )}
@@ -453,7 +561,99 @@ export default function ScanStart() {
             </div>
           )}
 
-          {extracted && (
+          {/*
+            Editable clothing review. Bound to the full extraction, so every
+            field appears whether or not the model could read it — an
+            unreadable brand is an empty box the reviewer can fill in, not a
+            missing row. The confidence badge shows only where a value was
+            actually read; there is nothing to score on a blank.
+          */}
+          {extracted && draft && (
+            <div
+              data-testid="garment-review-form"
+              className="mt-4 border border-ns-border-soft rounded-lg overflow-hidden divide-y divide-ns-border-soft"
+            >
+              {GARMENT_REVIEW_FIELDS.map((spec) => {
+                const conf = confidences[spec.key]
+                const flagged = flagged_.has(spec.key)
+                return (
+                  <div
+                    key={spec.key}
+                    className="grid grid-cols-1 sm:grid-cols-[10rem_1fr_auto] items-center gap-2 px-4 py-2.5 bg-white"
+                  >
+                    <label
+                      htmlFor={`garment-${spec.key}`}
+                      className="text-sm text-slate-500"
+                    >
+                      {spec.label}
+                    </label>
+                    <input
+                      id={`garment-${spec.key}`}
+                      type="text"
+                      value={draft[spec.key] as string}
+                      placeholder={spec.placeholder ?? 'Not read — add if known'}
+                      onChange={(e) => editDraft(spec.key, e.target.value)}
+                      className={[
+                        'w-full rounded-lg border px-3 py-1.5 text-sm text-ns-navy',
+                        'focus:outline-none focus:ring-2 focus:ring-ns-blue/30 focus:border-ns-blue',
+                        flagged
+                          ? 'border-amber-300 bg-amber-50/40'
+                          : 'border-ns-border-soft bg-white',
+                      ].join(' ')}
+                    />
+                    <span className="justify-self-end">
+                      {conf == null ? (
+                        <span className="text-[11px] text-slate-400">
+                          {flagged ? 'needs review' : 'not read'}
+                        </span>
+                      ) : (
+                        <span title="Extraction confidence">
+                          <Badge tone={confidenceTone(conf)}>
+                            {Math.round(conf * 100)}%
+                          </Badge>
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                )
+              })}
+
+              {/* Condition is a choice, not free text — it maps onto the
+                  asset condition scale. 'unknown' from the model arrives as
+                  null so the reviewer picks rather than inheriting a guess. */}
+              <div className="grid grid-cols-1 sm:grid-cols-[10rem_1fr] items-center gap-2 px-4 py-2.5 bg-white">
+                <label
+                  htmlFor="garment-condition"
+                  className="text-sm text-slate-500"
+                >
+                  Condition
+                </label>
+                <select
+                  id="garment-condition"
+                  value={condition ?? ''}
+                  onChange={(e) =>
+                    setCondition(
+                      e.target.value === ''
+                        ? null
+                        : (e.target.value as AssetConditionValue),
+                    )
+                  }
+                  className="w-full rounded-lg border border-ns-border-soft bg-white px-3 py-1.5 text-sm text-ns-navy focus:outline-none focus:ring-2 focus:ring-ns-blue/30 focus:border-ns-blue"
+                >
+                  <option value="">Not assessed</option>
+                  {CONDITION_CHOICES.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+
+          {/* Read-only summary. Used for demo fixtures and for any response
+              without a clothing payload, where there is nothing to edit. */}
+          {extracted && !draft && (
             <div className="mt-4 divide-y divide-ns-border-soft border border-ns-border-soft rounded-lg overflow-hidden">
               {(extracted.fields ?? []).map((f) => (
                 <div
@@ -463,9 +663,20 @@ export default function ScanStart() {
                   <span className="text-slate-500">{f.label}</span>
                   <span className="flex items-center gap-3">
                     <span className="font-medium text-ns-navy">{f.value}</span>
-                    <Badge tone={confidenceTone(f.confidence)}>
-                      {Math.round(f.confidence * 100)}%
-                    </Badge>
+                    {/* A demo fixture's score is fabricated; a real one is the
+                        model's own confidence. The tooltip distinguishes them
+                        so a fixed placeholder is never read as measured. */}
+                    <span
+                      title={
+                        extracted.simulated
+                          ? 'Simulated score — not a measured confidence'
+                          : 'Extraction confidence'
+                      }
+                    >
+                      <Badge tone={confidenceTone(f.confidence)}>
+                        {Math.round(f.confidence * 100)}%
+                      </Badge>
+                    </span>
                   </span>
                 </div>
               ))}
