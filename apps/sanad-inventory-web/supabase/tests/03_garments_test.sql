@@ -413,7 +413,33 @@ select test.assert(
 );
 
 -- =====================================================================
--- 10. The creation RPC is not a privilege-escalation hole
+-- 10. Every foreign key on garments has a covering index
+-- =====================================================================
+-- The hosted performance advisor reports `unindexed_foreign_keys` for the
+-- referencing side of any FK with no index: Postgres creates one for the
+-- referenced side only. Asserted here so a future column cannot reintroduce
+-- the finding silently. The index must LEAD with the constrained columns —
+-- a trailing position cannot serve the lookup.
+select test.assert(
+  'perf: every foreign key on garments has a covering index',
+  not exists (
+    select 1
+    from pg_constraint c
+    where c.conrelid = 'public.garments'::regclass
+      and c.contype = 'f'
+      and not exists (
+        select 1
+        from pg_index i
+        where i.indrelid = c.conrelid
+          -- leading columns of the index match the FK's columns, in order
+          and (i.indkey::smallint[])[0:array_length(c.conkey, 1) - 1]
+              = c.conkey::smallint[]
+      )
+  )
+);
+
+-- =====================================================================
+-- 11. The creation RPC is not a privilege-escalation hole
 -- =====================================================================
 select test.assert(
   'advisor: create_garment_asset is SECURITY INVOKER, not DEFINER',
