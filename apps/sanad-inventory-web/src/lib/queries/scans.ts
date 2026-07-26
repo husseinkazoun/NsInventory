@@ -3,6 +3,7 @@ import { currentUserId, supabase } from '../supabaseClient'
 import { asAppError, isAuthExpiryError, resolveCurrentOrgId } from '../org'
 import { createLabAsset } from './labAssets'
 import type { AssetCondition } from '../mockData'
+import type { ClothingExtraction, GarmentDraft } from '../clothing'
 
 export type ScanType = 'intake' | 'condition' | 'missing'
 export type PhotoType = 'overview' | 'serial_label' | 'components' | 'condition'
@@ -33,6 +34,15 @@ export type ExtractedResults = {
 
 export type ProcessResponse = ExtractedResults & {
   confidence: number
+  /**
+   * The full structured clothing extraction, when the scan produced one.
+   *
+   * Distinct from `fields`, which omits anything the model could not read.
+   * The review step binds its editable form to this so an unreadable brand
+   * still renders as an empty, editable box. Null for a scan that returned no
+   * clothing payload (a demo fixture, or a non-clothing response shape).
+   */
+  clothing?: ClothingExtraction | null
   /**
    * Vestigial. Nothing sets it any more — configured mode has no offline
    * fallback — but `completeScanSession` still writes it to
@@ -184,6 +194,11 @@ function parseScanResponse(data: unknown): {
       extracted.missing_components as ProcessResponse['missing_components'],
     suggested_lab_asset:
       extracted.suggested_lab_asset as ProcessResponse['suggested_lab_asset'],
+    // Carried through so the review step can render every field, including
+    // the ones `fields` drops because the model could not read them.
+    clothing: isPlainObject(extracted.clothing)
+      ? (extracted.clothing as unknown as ClothingExtraction)
+      : null,
   }
   return { response, extracted }
 }
@@ -471,11 +486,50 @@ async function readServerMessage(err: unknown): Promise<string | undefined> {
 // =====================================================================
 // completeScanSession — marks done, optionally creates asset / missing
 // =====================================================================
+/**
+ * Turns the reviewed draft into the jsonb `create_garment_asset` expects.
+ *
+ * Values are trimmed and empty strings are left empty on purpose: the
+ * function applies `nullif(..., '')`, so "not readable and not filled in"
+ * lands in the database as NULL rather than as an empty string masquerading
+ * as a value.
+ */
+function garmentPayload(draft: GarmentDraft): Record<string, unknown> {
+  const t = (s: string) => s.trim()
+  return {
+    title: t(draft.title),
+    garment_type: t(draft.garment_type),
+    brand: t(draft.brand),
+    size_label: t(draft.size_label),
+    size_system: t(draft.size_system),
+    material: t(draft.material),
+    primary_color: t(draft.primary_color),
+    secondary_color: t(draft.secondary_color),
+    pattern: t(draft.pattern),
+    condition_notes: t(draft.condition_notes),
+    sku: t(draft.sku),
+    notes: t(draft.notes),
+    listing_status: draft.listing_status,
+    purchase_cost: t(draft.purchase_cost),
+    selling_price: t(draft.selling_price),
+  }
+}
+
 export async function completeScanSession(input: {
   scanSessionId: string
   scanType: ScanType
   labAssetId?: string | null
   extracted: ProcessResponse
+  /**
+   * The reviewed clothing values. When present on an intake scan, the asset
+   * and its garment record are created together in one transaction, and
+   * THESE values are stored — not the AI's original suggestions.
+   */
+  garment?: GarmentDraft | null
+  /** Reviewed condition, overriding whatever the model detected. */
+  condition?: AssetCondition | null
+  /** The photo this scan analysed, recorded as the garment's primary image. */
+  photoScanId?: string | null
 }): Promise<{ labAssetId: string | null }> {
   if (!supabase) {
     return { labAssetId: input.labAssetId ?? null }
@@ -512,40 +566,81 @@ export async function completeScanSession(input: {
     }
   }
 
-  // Intake: auto-create a lab_assets row from the suggested fields.
+  // Intake: auto-create a lab_assets row from the reviewed fields.
   if (input.scanType === 'intake' && !labAssetId) {
     const sug = input.extracted.suggested_lab_asset
     // Derived from the session, so a retry computes the same tag rather than
     // a new random one. Any tag the extractor suggests is ignored: a constant
     // suggestion collided with unique (organization_id, tag).
     const tag = intakeTagForSession(input.scanSessionId)
-    const name = sug?.name?.trim() || sug?.model?.trim() || 'Untitled asset'
+    // Reviewed condition wins over the detected one — the reviewer may have
+    // corrected it, and an unreadable condition arrives here as null.
     const condition: AssetCondition =
-      input.extracted.detected_condition ?? 'good'
+      input.condition ?? input.extracted.detected_condition ?? 'good'
 
-    // Retry safety, step 2: if the row already exists under that tag — a
-    // retry that got far enough to insert last time — adopt it instead of
-    // failing on the unique constraint.
-    const { data: existingAsset } = await supabase
-      .from('lab_assets')
-      .select('id')
-      .eq('organization_id', organizationId)
-      .eq('tag', tag)
-      .maybeSingle()
+    if (input.garment) {
+      // ── Clothing intake: one transaction, both records ──
+      // A separate asset insert followed by a garment insert could leave an
+      // asset with no clothing record if the second call failed. The function
+      // is SECURITY INVOKER, so RLS still governs both writes, and it is
+      // idempotent on the session and the tag — a double-click or a retry
+      // adopts the existing asset instead of creating a second one.
+      const name =
+        input.garment.title.trim() ||
+        input.garment.garment_type.trim() ||
+        sug?.name?.trim() ||
+        'Untitled garment'
 
-    if (existingAsset?.id) {
-      labAssetId = existingAsset.id as string
-    } else {
-      const created = await createLabAsset({
-        name,
-        tag,
-        manufacturer: sug?.manufacturer,
-        model: sug?.model,
-        serial: sug?.serial,
-        condition,
-        status: 'active',
+      const { data, error } = await supabase.rpc('create_garment_asset', {
+        p_organization_id: organizationId,
+        p_tag: tag,
+        p_name: name,
+        p_condition: condition,
+        p_status: 'active',
+        p_location: null,
+        p_garment: garmentPayload(input.garment),
+        p_scan_session_id: input.scanSessionId,
+        p_photo_scan_id: input.photoScanId ?? null,
+        p_confidence: input.extracted.confidence ?? null,
+        // The model's original words, kept verbatim for audit alongside the
+        // reviewed values the columns hold.
+        p_ai_extraction: input.extracted.clothing ?? null,
       })
-      labAssetId = created.id
+      if (error) throw asAppError(error)
+      if (typeof data !== 'string') {
+        throw new ScanProcessingError(
+          'The asset could not be created. Nothing was saved. Please try again.',
+        )
+      }
+      labAssetId = data
+    } else {
+      // ── Non-clothing intake: unchanged ──
+      const name = sug?.name?.trim() || sug?.model?.trim() || 'Untitled asset'
+
+      // Retry safety, step 2: if the row already exists under that tag — a
+      // retry that got far enough to insert last time — adopt it instead of
+      // failing on the unique constraint.
+      const { data: existingAsset } = await supabase
+        .from('lab_assets')
+        .select('id')
+        .eq('organization_id', organizationId)
+        .eq('tag', tag)
+        .maybeSingle()
+
+      if (existingAsset?.id) {
+        labAssetId = existingAsset.id as string
+      } else {
+        const created = await createLabAsset({
+          name,
+          tag,
+          manufacturer: sug?.manufacturer,
+          model: sug?.model,
+          serial: sug?.serial,
+          condition,
+          status: 'active',
+        })
+        labAssetId = created.id
+      }
     }
   }
 

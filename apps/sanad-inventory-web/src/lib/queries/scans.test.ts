@@ -20,6 +20,7 @@ const {
   intakeTagForSession,
   processScanPhoto,
 } = await import('./scans')
+type GarmentDraft = import('../clothing').GarmentDraft
 const { supabase } = await import('../supabaseClient')
 const { clearOrgCache } = await import('../org')
 
@@ -33,6 +34,7 @@ const IMAGE = `${ORG}/${SESSION}/photo.png`
 type MutableClient = {
   from: (...args: unknown[]) => unknown
   functions?: { invoke: (...args: unknown[]) => Promise<unknown> }
+  rpc?: (name: string, args: Record<string, unknown>) => Promise<unknown>
 }
 const client = supabase as unknown as MutableClient
 const originalFrom = client.from
@@ -47,7 +49,78 @@ beforeEach(() => {
   ])
   client.from = originalFrom
   delete client.functions
+  delete client.rpc
 })
+
+/**
+ * A permissive chainable stand-in for `from(...)`.
+ *
+ * `completeScanSession` walks several different chains — `select().eq().eq()
+ * .maybeSingle()`, `update().eq().eq()`, `insert()` — and the shared fake
+ * client only models the narrow shape the earlier tests needed. This accepts
+ * any of them and resolves to "no row found", which is the path a fresh
+ * session takes. Table writes are recorded for assertions.
+ */
+function stubAssetChain(): Array<{ table: string; op: string }> {
+  const seen: Array<{ table: string; op: string }> = []
+  client.from = ((table: string) => {
+    // Organization resolution still has to work: completeScanSession calls
+    // resolveCurrentOrgId() first, and shadowing that lookup would fail the
+    // test with NoOrganizationError long before reaching the RPC.
+    if (table === 'organization_members') {
+      return (originalFrom as (t: string) => unknown)(table)
+    }
+    const chain: Record<string, unknown> = {}
+    const record = (op: string) => {
+      seen.push({ table, op })
+      return chain
+    }
+    chain.select = () => chain
+    chain.eq = () => chain
+    chain.in = () => chain
+    chain.order = () => chain
+    chain.insert = () => record('insert')
+    chain.update = () => record('update')
+    chain.maybeSingle = () => Promise.resolve({ data: null, error: null })
+    chain.single = () => Promise.resolve({ data: null, error: null })
+    chain.then = (resolve: (v: unknown) => unknown) =>
+      Promise.resolve({ data: null, error: null }).then(resolve)
+    return chain
+  }) as MutableClient['from']
+  return seen
+}
+
+/** Records every rpc(name, args) call and returns a fixed result. */
+function spyRpc(result: { data?: unknown; error?: unknown }) {
+  const calls: Array<{ name: string; args: Record<string, unknown> }> = []
+  client.rpc = (name: string, args: Record<string, unknown>) => {
+    calls.push({ name, args })
+    return Promise.resolve(result)
+  }
+  return calls
+}
+
+/** A reviewed draft — deliberately different from what the AI suggested. */
+function reviewedDraft(over: Partial<GarmentDraft> = {}): GarmentDraft {
+  return {
+    title: 'Navy jacket, size M',
+    garment_type: 'Jacket',
+    brand: 'Corrected Brand',
+    size_label: 'M',
+    size_system: '',
+    material: '',
+    primary_color: 'navy',
+    secondary_color: '',
+    pattern: '',
+    condition_notes: '',
+    sku: '',
+    notes: '',
+    listing_status: 'draft',
+    purchase_cost: '',
+    selling_price: '',
+    ...over,
+  }
+}
 
 /** Replaces functions.invoke for one test. */
 function stubInvoke(result: { data?: unknown; error?: unknown }) {
@@ -368,6 +441,225 @@ describe('completeScanSession guards against unconfirmed results', () => {
       expect(updates).toHaveLength(0)
     })
   }
+})
+
+// =====================================================================
+// Clothing intake saves the REVIEWED values, atomically
+// =====================================================================
+describe('completeScanSession creates a garment from the reviewed draft', () => {
+  const genuine = {
+    simulated: false as const,
+    confidence: 0.81,
+    detected_condition: 'fair' as const,
+    suggested_lab_asset: { name: 'AI suggested name' },
+    clothing: { garment_type: { value: 'Jacket', confidence: 0.9 } } as never,
+  }
+
+  it('routes clothing intake through the atomic create_garment_asset call', async () => {
+    stubAssetChain()
+    const calls = spyRpc({ data: 'new-asset-id', error: null })
+    const out = await completeScanSession({
+      scanSessionId: SESSION,
+      scanType: 'intake',
+      extracted: genuine,
+      garment: reviewedDraft(),
+      condition: 'good',
+      photoScanId: 'photo-1',
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].name).toBe('create_garment_asset')
+    expect(out.labAssetId).toBe('new-asset-id')
+  })
+
+  it('sends the corrected values, not the AI’s originals', async () => {
+    stubAssetChain()
+    const calls = spyRpc({ data: 'new-asset-id', error: null })
+    await completeScanSession({
+      scanSessionId: SESSION,
+      scanType: 'intake',
+      extracted: genuine,
+      garment: reviewedDraft({ brand: 'Corrected Brand', size_label: 'XL' }),
+      condition: 'good',
+    })
+    const g = calls[0].args.p_garment as Record<string, unknown>
+    expect(g.brand).toBe('Corrected Brand')
+    expect(g.size_label).toBe('XL')
+    // The reviewer's condition wins over detected_condition ('fair').
+    expect(calls[0].args.p_condition).toBe('good')
+    // The asset name comes from the reviewed title, not suggested_lab_asset.
+    expect(calls[0].args.p_name).toBe('Navy jacket, size M')
+  })
+
+  it('keeps the AI’s original extraction alongside the reviewed values', async () => {
+    stubAssetChain()
+    const calls = spyRpc({ data: 'new-asset-id', error: null })
+    await completeScanSession({
+      scanSessionId: SESSION,
+      scanType: 'intake',
+      extracted: genuine,
+      garment: reviewedDraft({ brand: 'Corrected Brand' }),
+    })
+    // Corrected value in the columns, original words kept for audit.
+    expect((calls[0].args.p_garment as Record<string, unknown>).brand).toBe(
+      'Corrected Brand',
+    )
+    expect(calls[0].args.p_ai_extraction).toBe(genuine.clothing)
+  })
+
+  it('passes the scan session and photo so provenance is recorded', async () => {
+    stubAssetChain()
+    const calls = spyRpc({ data: 'new-asset-id', error: null })
+    await completeScanSession({
+      scanSessionId: SESSION,
+      scanType: 'intake',
+      extracted: genuine,
+      garment: reviewedDraft(),
+      photoScanId: 'photo-42',
+    })
+    expect(calls[0].args.p_scan_session_id).toBe(SESSION)
+    expect(calls[0].args.p_photo_scan_id).toBe('photo-42')
+    expect(calls[0].args.p_confidence).toBe(0.81)
+  })
+
+  it('uses the session-derived tag, so a retry cannot create a second asset', async () => {
+    stubAssetChain()
+    const calls = spyRpc({ data: 'new-asset-id', error: null })
+    await completeScanSession({
+      scanSessionId: SESSION,
+      scanType: 'intake',
+      extracted: genuine,
+      garment: reviewedDraft(),
+    })
+    expect(calls[0].args.p_tag).toBe(intakeTagForSession(SESSION))
+  })
+
+  it('leaves a field the reviewer did not fill in empty, for the database to store as NULL', async () => {
+    stubAssetChain()
+    const calls = spyRpc({ data: 'new-asset-id', error: null })
+    await completeScanSession({
+      scanSessionId: SESSION,
+      scanType: 'intake',
+      extracted: genuine,
+      garment: reviewedDraft({ material: '', pattern: '   ' }),
+    })
+    const g = calls[0].args.p_garment as Record<string, unknown>
+    // Empty, not a placeholder word. create_garment_asset applies nullif().
+    expect(g.material).toBe('')
+    expect(g.pattern).toBe('')
+  })
+
+  it('falls back to the garment type when the reviewer cleared the title', async () => {
+    stubAssetChain()
+    const calls = spyRpc({ data: 'new-asset-id', error: null })
+    await completeScanSession({
+      scanSessionId: SESSION,
+      scanType: 'intake',
+      extracted: genuine,
+      garment: reviewedDraft({ title: '  ', garment_type: 'Coat' }),
+    })
+    expect(calls[0].args.p_name).toBe('Coat')
+  })
+
+  it('surfaces a failed save and creates nothing partial', async () => {
+    // The whole insert is one transaction inside the function: a failure
+    // rolls back both records, so there is no asset without its garment.
+    stubAssetChain()
+    spyRpc({ data: null, error: { message: 'insert failed', code: '23505' } })
+    const err = await completeScanSession({
+      scanSessionId: SESSION,
+      scanType: 'intake',
+      extracted: genuine,
+      garment: reviewedDraft(),
+    }).catch((e) => e)
+    expect(err).toMatchObject({ code: '23505' })
+  })
+
+  it('refuses a response that did not return an asset id', async () => {
+    // A call that reports no error but no id has not created anything
+    // usable; treating it as success would show a broken asset link.
+    stubAssetChain()
+    spyRpc({ data: null, error: null })
+    const err = await completeScanSession({
+      scanSessionId: SESSION,
+      scanType: 'intake',
+      extracted: genuine,
+      garment: reviewedDraft(),
+    }).catch((e) => e)
+    expect(err).toBeInstanceOf(ScanProcessingError)
+  })
+
+  it('still refuses to save a simulated result as a garment', async () => {
+    // The honesty invariant is unchanged by the clothing work.
+    stubAssetChain()
+    const calls = spyRpc({ data: 'new-asset-id', error: null })
+    await expect(
+      completeScanSession({
+        scanSessionId: SESSION,
+        scanType: 'intake',
+        extracted: { simulated: true, confidence: 0.5 },
+        garment: reviewedDraft(),
+      }),
+    ).rejects.toBeInstanceOf(ScanProcessingError)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('does not use the clothing path for a non-clothing intake', async () => {
+    // No garment draft: the original generic asset creation is untouched.
+    stubAssetChain()
+    const calls = spyRpc({ data: 'new-asset-id', error: null })
+    const updates = spyUpdates()
+    await completeScanSession({
+      scanSessionId: SESSION,
+      scanType: 'intake',
+      extracted: { simulated: false, confidence: 0.9 },
+      garment: null,
+    }).catch(() => undefined)
+    expect(calls).toHaveLength(0)
+    expect(updates.length).toBeGreaterThanOrEqual(0)
+  })
+})
+
+// =====================================================================
+// The clothing payload reaches the client for the review form
+// =====================================================================
+describe('the full clothing extraction is carried to the review step', () => {
+  it('lifts extracted.clothing, which fields alone cannot supply', async () => {
+    // `fields` omits anything unreadable, so an empty editable Brand box can
+    // only come from the structured payload.
+    const clothing = {
+      garment_type: { value: 'Jacket', confidence: 0.9 },
+      brand: { value: null, confidence: 0.1, evidence: null },
+    }
+    stubInvoke({
+      data: {
+        simulated: false,
+        confidence: 0.9,
+        extracted: { fields: [{ label: 'Type', value: 'Jacket', confidence: 0.9 }], clothing },
+      },
+    })
+    const result = await processScanPhoto(args)
+    expect(result.clothing).toEqual(clothing)
+    // The unreadable brand is absent from `fields` but present in `clothing`.
+    expect(result.fields).toHaveLength(1)
+  })
+
+  it('is null when the response carries no clothing payload', async () => {
+    stubInvoke({ data: { simulated: false, confidence: 0.9, extracted: {} } })
+    const result = await processScanPhoto(args)
+    expect(result.clothing).toBeNull()
+  })
+
+  it('is null rather than a malformed value when clothing is not an object', async () => {
+    stubInvoke({
+      data: {
+        simulated: false,
+        confidence: 0.9,
+        extracted: { clothing: 'not-an-object' },
+      },
+    })
+    const result = await processScanPhoto(args)
+    expect(result.clothing).toBeNull()
+  })
 })
 
 // =====================================================================

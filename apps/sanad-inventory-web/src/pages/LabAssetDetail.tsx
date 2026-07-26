@@ -21,6 +21,8 @@ import {
   type MissingComponentRecord,
 } from '../lib/mockData'
 import { getLabAsset } from '../lib/queries/labAssets'
+import { getGarmentForAsset, type Garment } from '../lib/queries/garments'
+import { GarmentDetails } from '../components/asset/GarmentDetails'
 import {
   getInspectionSummary,
   listMissingComponents,
@@ -58,17 +60,24 @@ export default function LabAssetDetail() {
   // UX only — RLS refuses these writes regardless of what is rendered.
   const { canWrite } = useCapabilities()
   const [asset, setAsset] = useState<LabAsset | null>(null)
+  // Non-null exactly when this asset has a `garments` row. That row existing
+  // IS the definition of clothing — nothing is inferred from the name,
+  // category or manufacturer.
+  const [garment, setGarment] = useState<Garment | null>(null)
   const [inspection, setInspection] = useState<InspectionSummary | null>(null)
   const [missing, setMissing] = useState<MissingComponentRecord[]>([])
   const [activity, setActivity] = useState<ActivityEvent[]>([])
   const [loading, setLoading] = useState<boolean>(true)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
+  const isClothing = garment !== null
+
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setErrorMsg(null)
     setAsset(null)
+    setGarment(null)
     setInspection(null)
     setMissing([])
     setActivity([])
@@ -78,6 +87,13 @@ export default function LabAssetDetail() {
     // down the page; it just renders its empty state.
     Promise.all([
       getLabAsset(assetId),
+      // A failure here must not make an asset look like equipment: that
+      // would silently show serial/maintenance sections for a garment. It
+      // falls back to null, and the clothing panel is simply absent.
+      getGarmentForAsset(assetId).catch((e: unknown) => {
+        console.warn('garment fetch failed:', e)
+        return null
+      }),
       getInspectionSummary(assetId).catch((e: unknown) => {
         console.warn('inspection summary fetch failed:', e)
         return null
@@ -91,9 +107,10 @@ export default function LabAssetDetail() {
         return [] as ActivityEvent[]
       }),
     ])
-      .then(([a, insp, miss, act]) => {
+      .then(([a, garm, insp, miss, act]) => {
         if (cancelled) return
         setAsset(a)
+        setGarment(garm)
         setInspection(insp)
         setMissing(miss)
         setActivity(act)
@@ -211,18 +228,31 @@ export default function LabAssetDetail() {
               <Badge tone={conditionTone(asset.condition)}>{asset.condition}</Badge>
             </dd>
 
-            <dt className="col-span-1 text-slate-500">Manufacturer</dt>
-            <dd className="col-span-2 text-ns-navy">{asset.manufacturer || <span className="text-slate-400">—</span>}</dd>
+            {/*
+              Equipment-specific identification. A garment has no
+              manufacturer/model/serial in any meaningful sense — the brand,
+              type and style code live on the garment record instead — so
+              these rows are omitted for clothing rather than shown empty.
+              Untouched for every non-clothing asset.
+            */}
+            {!isClothing && (
+              <>
+                <dt className="col-span-1 text-slate-500">Manufacturer</dt>
+                <dd className="col-span-2 text-ns-navy">{asset.manufacturer || <span className="text-slate-400">—</span>}</dd>
 
-            <dt className="col-span-1 text-slate-500">Model</dt>
-            <dd className="col-span-2 text-ns-navy">{asset.model || <span className="text-slate-400">—</span>}</dd>
+                <dt className="col-span-1 text-slate-500">Model</dt>
+                <dd className="col-span-2 text-ns-navy">{asset.model || <span className="text-slate-400">—</span>}</dd>
 
-            <dt className="col-span-1 text-slate-500">Serial</dt>
-            <dd className="col-span-2 font-mono text-xs text-ns-navy">
-              {asset.serial || <span className="text-slate-400 font-sans">—</span>}
-            </dd>
+                <dt className="col-span-1 text-slate-500">Serial</dt>
+                <dd className="col-span-2 font-mono text-xs text-ns-navy">
+                  {asset.serial || <span className="text-slate-400 font-sans">—</span>}
+                </dd>
+              </>
+            )}
 
-            <dt className="col-span-1 text-slate-500">Location</dt>
+            <dt className="col-span-1 text-slate-500">
+              {isClothing ? 'Storage location' : 'Location'}
+            </dt>
             <dd className="col-span-2 text-ns-navy">{asset.location || <span className="text-slate-400">—</span>}</dd>
 
             <dt className="col-span-1 text-slate-500">Assigned to</dt>
@@ -230,16 +260,29 @@ export default function LabAssetDetail() {
               {asset.assignedTo ?? <span className="text-slate-400">Unassigned</span>}
             </dd>
 
-            <dt className="col-span-1 text-slate-500">Last maintenance</dt>
-            <dd className="col-span-2 text-ns-navy">{formatDate(asset.lastMaintenance)}</dd>
+            {/* Maintenance and warranty are equipment lifecycle concepts. */}
+            {!isClothing && (
+              <>
+                <dt className="col-span-1 text-slate-500">Last maintenance</dt>
+                <dd className="col-span-2 text-ns-navy">{formatDate(asset.lastMaintenance)}</dd>
 
-            <dt className="col-span-1 text-slate-500">Next maintenance</dt>
-            <dd className="col-span-2 text-ns-navy">{formatDate(asset.nextMaintenance)}</dd>
+                <dt className="col-span-1 text-slate-500">Next maintenance</dt>
+                <dd className="col-span-2 text-ns-navy">{formatDate(asset.nextMaintenance)}</dd>
 
-            <dt className="col-span-1 text-slate-500">Warranty</dt>
-            <dd className="col-span-2 text-ns-navy">{formatDate(asset.warrantyExpiry)}</dd>
+                <dt className="col-span-1 text-slate-500">Warranty</dt>
+                <dd className="col-span-2 text-ns-navy">{formatDate(asset.warrantyExpiry)}</dd>
+              </>
+            )}
           </dl>
         </section>
+
+        {garment && (
+          <GarmentDetails
+            garment={garment}
+            canWrite={canWrite}
+            onSaved={setGarment}
+          />
+        )}
 
         {/* Inspection Summary */}
         <section className="rounded-xl bg-white border border-ns-border-soft shadow-ns-card p-5">
@@ -295,7 +338,12 @@ export default function LabAssetDetail() {
           )}
         </section>
 
-        {/* Missing Components */}
+        {/*
+          Missing Components is a parts-inventory concept for equipment: a
+          garment has no expected component set to be missing from. Flaws are
+          the clothing equivalent and live on the garment panel above.
+        */}
+        {!isClothing && (
         <section className="rounded-xl bg-white border border-ns-border-soft shadow-ns-card p-5">
           <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ns-navy-soft mb-3">
             <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
@@ -323,6 +371,7 @@ export default function LabAssetDetail() {
             </ul>
           )}
         </section>
+        )}
 
         {/* Recent Activity */}
         <section className="rounded-xl bg-white border border-ns-border-soft shadow-ns-card p-5">
